@@ -4,8 +4,8 @@ Agendador de tarefas em Go. Lê um arquivo YAML com a lista de jobs e executa ca
 
 - Um único binário, sem banco de dados e sem servidor HTTP.
 - Os comandos são executados diretamente via `os/exec`, **nunca por um shell**.
-- Cada job roda em seu próprio grupo de processos (Unix), então um timeout ou um encerramento mata também os processos filhos e netos.
-- Se uma execução ainda está em andamento quando chega o próximo disparo do mesmo job, o novo disparo é pulado.
+- Cada job roda em seu próprio *process group* (Unix), então um timeout ou um shutdown mata também os processos filhos e netos.
+- Se uma execução ainda está em andamento quando chega o próximo trigger do mesmo job, o novo trigger é pulado.
 
 ## Sumário
 
@@ -13,9 +13,9 @@ Agendador de tarefas em Go. Lê um arquivo YAML com a lista de jobs e executa ca
 2. [Instalação e build](#instalação-e-build)
 3. [Uso](#uso)
 4. [Referência do YAML](#referência-do-yaml)
-5. [Expressões de agendamento](#expressões-de-agendamento)
+5. [Expressões de schedule](#expressões-de-schedule)
 6. [Comportamento em execução](#comportamento-em-execução)
-7. [Encerramento](#encerramento)
+7. [Shutdown](#shutdown)
 8. [Logs](#logs)
 9. [Rodando como serviço](#rodando-como-serviço)
 10. [Segurança](#segurança)
@@ -26,7 +26,7 @@ Agendador de tarefas em Go. Lê um arquivo YAML com a lista de jobs e executa ca
 ## Requisitos
 
 - Go `1.27.1` ou superior (campo `go` do `go.mod`), apenas para compilar.
-- Linux ou macOS. O isolamento por grupo de processos (`Setpgid` e kill do grupo) existe só em sistemas Unix.
+- Linux ou macOS. O isolamento por process group (`Setpgid` e kill do grupo) existe só em sistemas Unix.
 - Python 3 no `PATH` (ou outro interpretador informado em `interpreter`), apenas se você usar jobs `type: python`.
 - Windows: o código tem um caminho alternativo (`internal/executor/runner_other.go`) que mata somente o processo direto, sem os netos. Esse caminho não é exercitado pelos testes do projeto; trate o Windows como não suportado.
 
@@ -65,11 +65,11 @@ go run ./cmd/agendador -config configs/jobs.yml
 
 Não há outras flags. O processo roda em primeiro plano até receber `SIGINT` ou `SIGTERM`.
 
-### Códigos de saída do agendador
+### Exit codes do agendador
 
 | Código | Quando |
 |---|---|
-| `0` | Encerramento por sinal em que todos os jobs em execução terminaram dentro do `-shutdown-timeout`; ou `-h`/`-help`, que imprime só o usage, sem a linha `error:`. |
+| `0` | Shutdown por sinal em que todos os jobs em execução terminaram dentro do `-shutdown-timeout`; ou `-h`/`-help`, que imprime só o usage, sem a linha `error:`. |
 | `1` | Qualquer erro: flag inválida, YAML inválido, schedule inválido, `-shutdown-timeout` esgotado com jobs ainda rodando, ou segundo sinal. A mensagem vai para o stderr com o prefixo `error:`. |
 
 ## Referência do YAML
@@ -79,7 +79,7 @@ O arquivo tem uma chave raiz `jobs`, uma lista. Campos desconhecidos são **reje
 | Campo | Tipo | Obrigatório | Padrão | Validação |
 |---|---|---|---|---|
 | `name` | string | sim | - | Não vazio e único no arquivo. |
-| `schedule` | string | sim | - | Expressão aceita pelo parser (veja [Expressões de agendamento](#expressões-de-agendamento)). |
+| `schedule` | string | sim | - | Expressão aceita pelo parser (veja [Expressões de schedule](#expressões-de-schedule)). |
 | `type` | string | sim | - | `python` ou `command`. |
 | `command` | string | sim | - | Não vazio. Em `python`, é o caminho do script; em `command`, o executável. |
 | `args` | lista de strings | não | vazia | Cada item vira um argumento, sem interpretação de shell. |
@@ -155,7 +155,7 @@ Os erros aparecem no stderr como `error: load config: ...` e o agendador **não 
 | `schedule` inválido | `invalid schedule "...": ...` |
 | Nome repetido | `job "<nome>": duplicate name` |
 
-## Expressões de agendamento
+## Expressões de schedule
 
 O parser (`robfig/cron/v3`) aceita:
 
@@ -165,14 +165,14 @@ O parser (`robfig/cron/v3`) aceita:
 
 Escreva sempre a expressão entre aspas no YAML (`"*/5 * * * *"`), pois `*` e `@` têm significado especial em YAML.
 
-**Fuso horário:** o agendador usa o fuso local do processo (`time.Local`, ou seja, o `TZ` do ambiente ou `/etc/localtime`). O parser da biblioteca também aceita um prefixo por expressão, como `CRON_TZ=America/Sao_Paulo 0 9 * * *` ou `TZ=UTC 0 9 * * *`; esse prefixo vem da biblioteca e não é exercitado pelos testes do projeto. Em container, o fuso padrão costuma ser UTC.
+**Timezone:** o agendador usa o timezone local do processo (`time.Local`, ou seja, o `TZ` do ambiente ou `/etc/localtime`). O parser da biblioteca também aceita um prefixo por expressão, como `CRON_TZ=America/Sao_Paulo 0 9 * * *` ou `TZ=UTC 0 9 * * *`; esse prefixo vem da biblioteca e não é exercitado pelos testes do projeto. Em container, o timezone padrão costuma ser UTC.
 
 ## Comportamento em execução
 
-- **Execução sobreposta é pulada.** Se o job ainda está rodando no próximo disparo, o disparo é descartado e é logado em `WARN` (`job skipped: previous run still in progress`). Não há fila.
-- **Timeout.** Ao estourar `timeout`, o grupo de processos inteiro recebe `SIGKILL`. O job é logado como falha com `error="job interrupted: context deadline exceeded"` e `exit_code=-1`.
-- **Exit code.** Código diferente de zero é uma falha (`job failed`, nível `ERROR`). `exit_code=-1` indica que o processo foi morto por sinal ou nunca iniciou (por exemplo, executável inexistente ou `workdir` inválido; o motivo vai no campo `error`).
-- **Captura de saída.** Stdout e stderr são capturados separadamente, **64 KiB cada**. Acima disso mantêm-se os primeiros 64 KiB e o resto é descartado em silêncio (o processo filho não trava por pipe cheio). Depois, o log aplica um corte adicional de 4 KiB (veja [Logs](#logs)).
+- **Overlap é pulado.** Se o job ainda está rodando no próximo trigger, o trigger é descartado e é logado em `WARN` (`job skipped: previous run still in progress`). Não há queue.
+- **Timeout.** Ao estourar `timeout`, o process group inteiro recebe `SIGKILL`. O job é logado como falha com `error="job interrupted: context deadline exceeded"` e `exit_code=-1`.
+- **Exit code.** Código diferente de zero é uma falha (`job failed`, log level `ERROR`). `exit_code=-1` indica que o processo foi morto por sinal ou nunca iniciou (por exemplo, executável inexistente ou `workdir` inválido; o motivo vai no campo `error`).
+- **Captura de output.** Stdout e stderr são capturados separadamente, **64 KiB cada**. Acima disso mantêm-se os primeiros 64 KiB e o resto é descartado em silêncio (o processo filho não trava por pipe cheio). Depois, o log aplica um corte adicional de 4 KiB (veja [Logs](#logs)).
 - **Ambiente.** O processo herda o ambiente do agendador; `env` do job soma ou sobrescreve variáveis.
 - **Sem shell.** Pipes (`|`), redirecionamentos (`>`), `&&`, `$VAR`, `~` e curingas (`*`) **não** são interpretados: viram argumentos literais. Se você realmente precisa deles, chame o shell explicitamente:
 
@@ -187,28 +187,28 @@ Escreva sempre a expressão entre aspas no YAML (`"*/5 * * * *"`), pois `*` e `@
   > **Aviso:** com `sh -c` você volta a ter todos os riscos de injeção de shell. Nunca monte a string do comando com dados não confiáveis. Prefira um script dedicado (por exemplo, um `.py`) chamado como `type: python`.
 - **Panic.** Um panic dentro da execução de um job é recuperado e logado em `ERROR` (`job panicked`); o agendador e os demais jobs continuam.
 
-## Encerramento
+## Shutdown
 
 1. **Primeiro sinal** (`SIGINT` ou `SIGTERM`): o agendador para de disparar novos jobs e espera os que estão rodando terminarem, por até `-shutdown-timeout`.
-2. **Se o prazo esgotar**: os jobs ainda ativos são mortos (`SIGKILL` no grupo de processos inteiro, filhos e netos incluídos) e o agendador sai com código `1`.
-3. **Segundo sinal**: aborta a espera na hora, mata os jobs em execução e sai com código `1`. Os jobs rodam em grupos de processos próprios e não recebem o Ctrl+C do terminal; por isso o agendador os mata explicitamente em vez de deixar o processo morrer e orfanar os filhos.
+2. **Se o prazo esgotar**: os jobs ainda ativos são mortos (`SIGKILL` no process group inteiro, filhos e netos incluídos) e o agendador sai com código `1`.
+3. **Segundo sinal**: aborta a espera na hora, mata os jobs em execução e sai com código `1`. Os jobs rodam em process groups próprios e não recebem o Ctrl+C do terminal; por isso o agendador os mata explicitamente em vez de deixar o processo morrer e orfanar os filhos.
 
-Se todos os jobs terminarem dentro do prazo, o código de saída é `0`.
+Se todos os jobs terminarem dentro do prazo, o exit code é `0`.
 
 ## Logs
 
 O agendador usa `log/slog` em formato texto (`chave=valor`) e escreve os logs no **stdout**. Erros fatais de inicialização vão para o stderr.
 
-| Nível | Mensagens |
+| Log level | Mensagens |
 |---|---|
 | `debug` | `job output`: stdout (e, em execuções bem-sucedidas, também stderr) de cada execução. |
 | `info` | `job registered`, `scheduler started`, `job started`, `job finished` (com `exit_code` e `duration`), `shutting down`. |
 | `warn` | `job skipped: previous run still in progress`. |
 | `error` | `job failed` (com `exit_code`, `duration`, `error` e `stderr`) e `job panicked`. |
 
-Nas falhas, o stderr aparece no log `ERROR` e o stdout só no `DEBUG`. Em execuções bem-sucedidas, nenhuma saída aparece abaixo do nível `debug`.
+Nas falhas, o stderr aparece no log `ERROR` e o stdout só no `DEBUG`. Em execuções bem-sucedidas, nenhum output aparece abaixo do log level `debug`.
 
-Cada campo de saída (`stdout`, `stderr`) é cortado em **4 KiB** nos logs, respeitando o limite de caractere UTF-8, e termina com `...(truncated)`.
+Cada campo de output (`stdout`, `stderr`) é cortado em **4 KiB** nos logs, respeitando o limite de caractere UTF-8, e termina com `...(truncated)`.
 
 ## Rodando como serviço
 
@@ -226,8 +226,8 @@ User=agendador
 ExecStart=/opt/agendador/bin/agendador -config /etc/agendador/jobs.yml -shutdown-timeout 30s
 WorkingDirectory=/opt/agendador
 KillSignal=SIGTERM
-# O padrão (control-group) manda SIGTERM a todo o cgroup, inclusive aos jobs (que rodam em grupos
-# de processos próprios), e atropela o encerramento gracioso. Com mixed, o SIGTERM vai só ao
+# O padrão (control-group) manda SIGTERM a todo o cgroup, inclusive aos jobs (que rodam em process
+# groups próprios), e atropela o graceful shutdown. Com mixed, o SIGTERM vai só ao
 # agendador e o SIGKILL final do systemd vai a todo o cgroup.
 KillMode=mixed
 # Maior que -shutdown-timeout, para o agendador terminar sozinho antes do SIGKILL do systemd.
@@ -272,9 +272,9 @@ docker run --rm \
   agendador
 ```
 
-Use `--init` (ou `tini`): sem um init, o agendador vira o PID 1 e não recolhe netos órfãos, que viram zumbis. No Compose, o equivalente é `init: true` no serviço.
+Use `--init` (ou `tini`): sem um init, o agendador vira o PID 1 e não recolhe netos órfãos, que viram *zombies*. No Compose, o equivalente é `init: true` no serviço.
 
-O `docker stop` envia `SIGTERM` ao PID 1 e espera 10 s por padrão; para usar um `-shutdown-timeout` maior, passe `--stop-timeout` (ou `stop_grace_period` no Compose). Se a imagem não tiver dados de fuso (`tzdata`), o `TZ` pode não ter efeito.
+O `docker stop` envia `SIGTERM` ao PID 1 e espera 10 s por padrão; para usar um `-shutdown-timeout` maior, passe `--stop-timeout` (ou `stop_grace_period` no Compose). Se a imagem não tiver dados de timezone (`tzdata`), o `TZ` pode não ter efeito.
 
 ## Segurança
 
@@ -286,21 +286,21 @@ O `docker stop` envia `SIGTERM` ao PID 1 e espera 10 s por padrão; para usar um
 ## Arquitetura
 
 ```
-cmd/agendador          raiz de composição: flags, logger, sinais, injeção das dependências
-internal/app           caso de uso: carrega, agenda, executa e encerra
-internal/domain        entidade Job, Result e as portas (interfaces); não depende de nada
-internal/config        adaptador YAML da porta ConfigLoader
-internal/executor      adaptador os/exec da porta Runner
-internal/scheduler     adaptador robfig/cron da porta Scheduler
+cmd/agendador          composition root: flags, logger, sinais, injeção das dependências
+internal/app           use case: carrega, agenda, executa e encerra
+internal/domain        entidade Job, Result e as ports (interfaces); não depende de nada
+internal/config        adapter YAML da port ConfigLoader
+internal/executor      adapter os/exec da port Runner
+internal/scheduler     adapter robfig/cron da port Scheduler
 ```
 
-Portas (`internal/domain/ports.go`):
+Ports (`internal/domain/ports.go`):
 
 - `ConfigLoader`: `Load(path) ([]Job, error)`
 - `Runner`: `Run(ctx, job) (Result, error)`
 - `Scheduler`: `Add(job, fn)`, `Start()`, `Stop(ctx)`
 
-A direção das dependências é sempre dos adaptadores e do caso de uso **para** o `domain`; o `domain` não importa nenhum outro pacote do projeto. Só `cmd/agendador` conhece os adaptadores concretos. O loader recebe a validação de schedule por injeção (`scheduler.ValidateSchedule`), o que o mantém independente da biblioteca de cron.
+A direção das dependências é sempre dos adapters e do use case **para** o `domain`; o `domain` não importa nenhum outro pacote do projeto. Só `cmd/agendador` conhece os adapters concretos. O loader recebe a validação de schedule por injeção (`scheduler.ValidateSchedule`), o que o mantém independente da biblioteca de cron.
 
 ### Como acrescentar um novo tipo de job
 
@@ -317,17 +317,17 @@ O executor não precisa mudar enquanto o novo tipo se resumir a "um executável 
 |---|---|
 | `make build` | Compila para `bin/agendador`. |
 | `make test` | `go test ./... -count=1`, com `-race` quando há cgo e `gcc`. |
-| `make cover` | Gera `coverage.out` e **falha se a cobertura total for menor que 80%**. |
+| `make cover` | Gera `coverage.out` e **falha se o coverage total for menor que 80%**. |
 | `make vet` | `go vet ./...`. |
 | `make run` | `go run ./cmd/agendador -config configs/jobs.yml`. |
 
-Os testes do executor (`internal/executor`) dependem de utilitários Unix (por exemplo, `sh`, `sleep`, `echo`) e dos recursos de grupo de processos; não rodam em Windows.
+Os testes do executor (`internal/executor`) dependem de utilitários Unix (por exemplo, `sh`, `sleep`, `echo`) e dos recursos de process group; não rodam em Windows.
 
 ## Limitações e fora de escopo
 
-- Sem recarregamento a quente: alterar o YAML exige reiniciar o agendador.
+- Sem hot reload: alterar o YAML exige reiniciar o agendador.
 - Sem retry automático de jobs que falharam.
-- Sem API HTTP e sem métricas.
-- Sem persistência: não há histórico de execuções nem recuperação de disparos perdidos enquanto o agendador estava parado.
-- Sem fila: disparos que coincidem com uma execução em andamento são descartados.
+- Sem API HTTP e sem metrics.
+- Sem persistência: não há histórico de execuções nem recuperação de triggers perdidos enquanto o agendador estava parado.
+- Sem queue: triggers que coincidem com uma execução em andamento são descartados.
 - Sem execução por shell; veja a seção de `sh -c` para o caso em que você a quer explicitamente.
