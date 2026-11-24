@@ -1,0 +1,26 @@
+# Copy to configs/jobs.yml. Schedules: 5 fields (optional leading seconds), @every 30s, @daily...
+# type "python" runs: <interpreter> <command> <args...>   (interpreter defaults to python3)
+# type "command" runs: <command> <args...>                (no shell is involved)
+jobs:
+  - name: hello-python
+    schedule: "*/1 * * * *"
+    type: python
+    command: scripts/hello.py
+    args: ["--name", "world"]
+    timeout: 30s
+
+  - name: echo-cli
+    schedule: "@every 30s"
+    type: command
+    command: echo
+    args: ["tick"]
+
+  - name: list-with-flags
+    schedule: "0 */5 * * * *"   # with seconds: every 5 minutes at second 0
+    type: command
+    command: ls
+    args: ["-l", "-a"]
+    workdir: /tmp
+    timeout: 1m
+    env:
+      LC_ALL: C
