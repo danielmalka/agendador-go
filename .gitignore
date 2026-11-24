@@ -2,3 +2,9 @@
 /bin/
 coverage.out
 .reports/
+.env
+.idea/
+.vscode/
+.DS_Store
+.harness/
+*.test
