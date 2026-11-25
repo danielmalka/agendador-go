@@ -1,16 +1,35 @@
 package scheduler
 
 import (
-	"bytes"
 	"context"
-	"log/slog"
+	"errors"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/danielmalka/agendador-go/internal/scheduling"
 )
+
+type recordingObserver struct {
+	mu     sync.Mutex
+	events []scheduling.Event
+}
+
+func (o *recordingObserver) Observe(_ context.Context, e scheduling.Event) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.events = append(o.events, e)
+}
+
+func (o *recordingObserver) snapshot() []scheduling.Event {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	out := make([]scheduling.Event, len(o.events))
+	copy(out, o.events)
+	return out
+}
 
 func TestValidateSchedule(t *testing.T) {
 	for _, spec := range []string{"* * * * *", "0 * * * * *", "@every 1s", "@daily"} {
@@ -26,19 +45,18 @@ func TestValidateSchedule(t *testing.T) {
 }
 
 func TestAddInvalidSchedule(t *testing.T) {
-	c := NewCron(slog.Default())
+	c := NewCron(nil)
 	err := c.Add(context.Background(), scheduling.Job{Name: "j", Schedule: "nope"}, func(context.Context) {})
 	if err == nil || !strings.Contains(err.Error(), `"j"`) {
 		t.Fatalf("err = %v", err)
 	}
 }
 
-func TestSkipIfRunningSkipsAndLogs(t *testing.T) {
-	var logs bytes.Buffer
-	logger := slog.New(slog.NewTextHandler(&logs, nil))
+func TestSkipIfRunningSkipsAndObserves(t *testing.T) {
+	obs := &recordingObserver{}
 	started, release := make(chan struct{}), make(chan struct{})
 	var runs atomic.Int32
-	wrapped := skipIfRunning("slow", logger, func(context.Context) {
+	wrapped := skipIfRunning(scheduling.Job{Name: "slow"}, obs, func(context.Context) {
 		if runs.Add(1) == 1 {
 			close(started)
 			<-release
@@ -55,8 +73,9 @@ func TestSkipIfRunningSkipsAndLogs(t *testing.T) {
 	if runs.Load() != 1 {
 		t.Fatalf("runs = %d, want 1", runs.Load())
 	}
-	if !strings.Contains(logs.String(), "skipped") || !strings.Contains(logs.String(), "job=slow") {
-		t.Fatalf("skip not logged: %q", logs.String())
+	ee := obs.snapshot()
+	if len(ee) != 1 || ee[0].Kind != scheduling.EventJobSkipped || ee[0].Job.Name != "slow" || !errors.Is(ee[0].Err, scheduling.ErrJobSkipped) {
+		t.Fatalf("skip event not recorded: %+v", ee)
 	}
 	wrapped(context.Background()) // runs again once free
 	if runs.Load() != 2 {
@@ -65,7 +84,7 @@ func TestSkipIfRunningSkipsAndLogs(t *testing.T) {
 }
 
 func TestCronTriggersAndStops(t *testing.T) {
-	c := NewCron(slog.Default())
+	c := NewCron(nil)
 	ran := make(chan struct{}, 1)
 	if err := c.Add(context.Background(), scheduling.Job{Name: "tick", Schedule: "@every 1s"}, func(context.Context) {
 		select {
@@ -89,7 +108,7 @@ func TestCronTriggersAndStops(t *testing.T) {
 }
 
 func TestStopCancelsJobContextWhenWaitExpires(t *testing.T) {
-	c := NewCron(slog.Default())
+	c := NewCron(nil)
 	started, canceled := make(chan struct{}), make(chan struct{})
 	var once atomic.Bool
 	_ = c.Add(context.Background(), scheduling.Job{Name: "hang", Schedule: "@every 1s"}, func(ctx context.Context) {
@@ -119,18 +138,18 @@ func TestStopCancelsJobContextWhenWaitExpires(t *testing.T) {
 	}
 }
 
-func TestPanicInJobIsRecoveredAndLogged(t *testing.T) {
-	var logs bytes.Buffer
-	logger := slog.New(slog.NewTextHandler(&logs, nil))
+func TestPanicInJobIsRecoveredAndObserved(t *testing.T) {
+	obs := &recordingObserver{}
 	var runs atomic.Int32
-	wrapped := skipIfRunning("boom", logger, func(context.Context) {
+	wrapped := skipIfRunning(scheduling.Job{Name: "boom"}, obs, func(context.Context) {
 		if runs.Add(1) == 1 {
 			panic("kaboom")
 		}
 	})
 	wrapped(context.Background()) // must not panic
-	if !strings.Contains(logs.String(), "job panicked") || !strings.Contains(logs.String(), "job=boom") || !strings.Contains(logs.String(), "kaboom") {
-		t.Fatalf("panic not logged: %s", logs.String())
+	ee := obs.snapshot()
+	if len(ee) != 1 || ee[0].Kind != scheduling.EventJobPanicked || ee[0].Job.Name != "boom" || !errors.Is(ee[0].Err, scheduling.ErrJobPanicked) || !strings.Contains(ee[0].Err.Error(), "kaboom") {
+		t.Fatalf("panic event not recorded: %+v", ee)
 	}
 	wrapped(context.Background()) // job is not left marked as running
 	if runs.Load() != 2 {

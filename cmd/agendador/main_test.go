@@ -3,11 +3,17 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
+	"time"
+	"unicode/utf8"
+
+	"github.com/danielmalka/agendador-go/internal/scheduling"
 )
 
 func cancelled() context.Context {
@@ -92,5 +98,56 @@ func TestRunHelpIsSuccess(t *testing.T) {
 	}
 	if !strings.Contains(errOut.String(), "-config") || out.Len() != 0 {
 		t.Fatalf("usage should go to stderr only: out=%q err=%q", out.String(), errOut.String())
+	}
+}
+
+func TestLogObserverFormatsLevelsAndTruncates(t *testing.T) {
+	observe := func(level slog.Level, ee ...scheduling.Event) string {
+		var logs bytes.Buffer
+		logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: level}))
+		obs := newLogObserver(logger)
+		for _, e := range ee {
+			obs.Observe(context.Background(), e)
+		}
+		return logs.String()
+	}
+
+	ok := observe(slog.LevelInfo, scheduling.Event{
+		Kind:   scheduling.EventJobFinished,
+		Job:    scheduling.Job{Name: "a"},
+		Result: scheduling.Result{Stdout: "OUT", Stderr: "ERR", Duration: time.Millisecond},
+	})
+	if strings.Contains(ok, "OUT") || strings.Contains(ok, "ERR") || !strings.Contains(ok, "job finished") {
+		t.Fatalf("info-level success must not log output: %s", ok)
+	}
+
+	failed := observe(slog.LevelInfo, scheduling.Event{
+		Kind:   scheduling.EventJobFailed,
+		Job:    scheduling.Job{Name: "a"},
+		Result: scheduling.Result{ExitCode: 3, Stdout: "OUT", Stderr: "ERR"},
+		Err:    errors.New("exit status 3"),
+	})
+	if strings.Contains(failed, "OUT") || !strings.Contains(failed, "ERR") || !strings.Contains(failed, "job failed") {
+		t.Fatalf("failure should log stderr but not stdout at info: %s", failed)
+	}
+
+	dbg := observe(slog.LevelDebug,
+		scheduling.Event{Kind: scheduling.EventJobStarted, Job: scheduling.Job{Name: "a"}},
+		scheduling.Event{Kind: scheduling.EventJobFinished, Job: scheduling.Job{Name: "a"}, Result: scheduling.Result{Stdout: "OUT", Stderr: "ERR"}},
+		scheduling.Event{Kind: scheduling.EventJobSkipped, Job: scheduling.Job{Name: "a"}, Err: scheduling.ErrJobSkipped},
+		scheduling.Event{Kind: scheduling.EventJobPanicked, Job: scheduling.Job{Name: "a"}, Err: errors.New("kaboom")},
+	)
+	for _, want := range []string{"level=DEBUG", "stdout=OUT", "stderr=ERR", "job started", "job skipped", "job panicked", "kaboom"} {
+		if !strings.Contains(dbg, want) {
+			t.Fatalf("debug logs missing %q: %s", want, dbg)
+		}
+	}
+
+	if got := truncateForLog("short"); got != "short" {
+		t.Fatalf("short output changed: %q", got)
+	}
+	got := truncateForLog(strings.Repeat("é", maxLoggedOutput))
+	if !utf8.ValidString(got) || !strings.HasSuffix(got, truncatedMark) {
+		t.Fatalf("invalid truncation: %q", got)
 	}
 }

@@ -3,24 +3,25 @@ package scheduling
 import (
 	"context"
 	"fmt"
-	"log/slog"
-	"unicode/utf8"
 )
 
 type service struct {
 	loader    JobLoader
 	runner    Runner
 	scheduler Scheduler
-	logger    *slog.Logger
+	observer  Observer
 }
 
 // NewService builds the scheduling use case.
-func NewService(l JobLoader, r Runner, s Scheduler, logger *slog.Logger) UseCase {
+func NewService(l JobLoader, r Runner, s Scheduler, obs Observer) UseCase {
+	if obs == nil {
+		obs = ObserverFunc(func(context.Context, Event) {})
+	}
 	return &service{
 		loader:    l,
 		runner:    r,
 		scheduler: s,
-		logger:    logger,
+		observer:  obs,
 	}
 }
 
@@ -34,13 +35,13 @@ func (s *service) Start(ctx context.Context, configPath string) error {
 		if err := s.scheduler.Add(ctx, j, s.jobFunc(j)); err != nil {
 			return err
 		}
-		s.logger.Info("job registered", "job", j.Name, "schedule", j.Schedule)
+		s.observer.Observe(ctx, Event{Kind: EventJobRegistered, Job: j})
 	}
 
 	if err := s.scheduler.Start(ctx); err != nil {
 		return err
 	}
-	s.logger.Info("scheduler started", "jobs", len(jj))
+	s.observer.Observe(ctx, Event{Kind: EventSchedulerStarted, JobCount: len(jj)})
 	return nil
 }
 
@@ -51,33 +52,12 @@ func (s *service) Stop(ctx context.Context) error {
 
 func (s *service) jobFunc(j Job) func(context.Context) {
 	return func(ctx context.Context) {
-		s.logger.Info("job started", "job", j.Name)
+		s.observer.Observe(ctx, Event{Kind: EventJobStarted, Job: j})
 		res, err := s.runner.Run(ctx, j)
-		base := []any{"job", j.Name, "exit_code", res.ExitCode, "duration", res.Duration}
-		output := []any{"job", j.Name, "stdout", truncateForLog(res.Stdout)}
 		if err != nil {
-			s.logger.Debug("job output", output...)
-			s.logger.Error("job failed", append(base, "error", err, "stderr", truncateForLog(res.Stderr))...)
+			s.observer.Observe(ctx, Event{Kind: EventJobFailed, Job: j, Result: res, Err: err})
 			return
 		}
-		s.logger.Debug("job output", append(output, "stderr", truncateForLog(res.Stderr))...)
-		s.logger.Info("job finished", base...)
+		s.observer.Observe(ctx, Event{Kind: EventJobFinished, Job: j, Result: res})
 	}
-}
-
-const (
-	maxLoggedOutput = 4 * 1024
-	truncatedMark   = "...(truncated)"
-)
-
-// truncateForLog caps s at maxLoggedOutput bytes (on a rune boundary) and marks the cut.
-func truncateForLog(s string) string {
-	if len(s) <= maxLoggedOutput {
-		return s
-	}
-	n := maxLoggedOutput
-	for n > 0 && !utf8.RuneStart(s[n]) {
-		n--
-	}
-	return s[:n] + truncatedMark
 }

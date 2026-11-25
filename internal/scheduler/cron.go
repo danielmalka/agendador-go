@@ -4,7 +4,6 @@ package scheduler
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"sync/atomic"
 
 	"github.com/robfig/cron/v3"
@@ -26,23 +25,26 @@ func ValidateSchedule(spec string) error {
 
 // Cron implements scheduling.Scheduler.
 type Cron struct {
-	cron    *cron.Cron
-	logger  *slog.Logger
-	baseCtx context.Context // parent of every job context; canceled when Stop gives up waiting
-	cancel  context.CancelFunc
+	cron     *cron.Cron
+	observer scheduling.Observer
+	baseCtx  context.Context // parent of every job context; canceled when Stop gives up waiting
+	cancel   context.CancelFunc
 }
 
 var _ scheduling.Scheduler = (*Cron)(nil)
 
-// NewCron builds a scheduler that logs skipped runs to logger.
-func NewCron(logger *slog.Logger) *Cron {
-	return &Cron{cron: cron.New(cron.WithParser(parser)), logger: logger}
+// NewCron builds a scheduler that reports skips and panics to obs.
+func NewCron(obs scheduling.Observer) *Cron {
+	if obs == nil {
+		obs = scheduling.ObserverFunc(func(context.Context, scheduling.Event) {})
+	}
+	return &Cron{cron: cron.New(cron.WithParser(parser)), observer: obs}
 }
 
 // Add registers fn on the job's schedule. A trigger is skipped while the
 // previous run of the same job is still going.
 func (c *Cron) Add(_ context.Context, j scheduling.Job, fn func(ctx context.Context)) error {
-	wrapped := skipIfRunning(j.Name, c.logger, fn)
+	wrapped := skipIfRunning(j, c.observer, fn)
 	if _, err := c.cron.AddFunc(string(j.Schedule), func() { wrapped(c.baseCtx) }); err != nil {
 		return fmt.Errorf("schedule job %q: %w", j.Name, err)
 	}
@@ -75,17 +77,25 @@ func (c *Cron) Stop(ctx context.Context) error {
 	}
 }
 
-func skipIfRunning(name string, logger *slog.Logger, fn func(ctx context.Context)) func(ctx context.Context) {
+func skipIfRunning(j scheduling.Job, obs scheduling.Observer, fn func(ctx context.Context)) func(ctx context.Context) {
 	var running atomic.Bool
 	return func(ctx context.Context) {
 		if !running.CompareAndSwap(false, true) {
-			logger.Warn("job skipped: previous run still in progress", "job", name)
+			obs.Observe(ctx, scheduling.Event{
+				Kind: scheduling.EventJobSkipped,
+				Job:  j,
+				Err:  scheduling.ErrJobSkipped,
+			})
 			return
 		}
 		defer running.Store(false)
 		defer func() {
 			if r := recover(); r != nil {
-				logger.Error("job panicked", "job", name, "panic", r)
+				obs.Observe(ctx, scheduling.Event{
+					Kind: scheduling.EventJobPanicked,
+					Job:  j,
+					Err:  fmt.Errorf("%w: %v", scheduling.ErrJobPanicked, r),
+				})
 			}
 		}()
 		fn(ctx)

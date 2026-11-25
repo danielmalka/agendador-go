@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"unicode/utf8"
 
 	"github.com/danielmalka/agendador-go/config"
 	yamlconfig "github.com/danielmalka/agendador-go/internal/config"
@@ -57,13 +58,14 @@ func run(ctx, forceCtx context.Context, args []string, stdout, stderr io.Writer)
 	}
 
 	logger := slog.New(slog.NewTextHandler(stdout, &slog.HandlerOptions{Level: cfg.LogLevel}))
+	obs := newLogObserver(logger)
 	uc := scheduling.NewService(
 		yamlconfig.NewYAMLLoader(scheduling.ScheduleValidatorFunc(func(_ context.Context, s scheduling.Schedule) error {
 			return scheduler.ValidateSchedule(string(s))
 		})),
 		executor.NewRunner(executor.DefaultMaxOutput),
-		scheduler.NewCron(logger),
-		logger,
+		scheduler.NewCron(obs),
+		obs,
 	)
 	if err := uc.Start(ctx, cfg.JobsPath); err != nil {
 		return err
@@ -74,4 +76,44 @@ func run(ctx, forceCtx context.Context, args []string, stdout, stderr io.Writer)
 	stopCtx, cancel := context.WithTimeout(forceCtx, cfg.ShutdownTimeout)
 	defer cancel()
 	return uc.Stop(stopCtx)
+}
+
+func newLogObserver(logger *slog.Logger) scheduling.Observer {
+	return scheduling.ObserverFunc(func(_ context.Context, e scheduling.Event) {
+		switch e.Kind {
+		case scheduling.EventJobRegistered:
+			logger.Info("job registered", "job", e.Job.Name, "schedule", e.Job.Schedule)
+		case scheduling.EventSchedulerStarted:
+			logger.Info("scheduler started", "jobs", e.JobCount)
+		case scheduling.EventJobStarted:
+			logger.Info("job started", "job", e.Job.Name)
+		case scheduling.EventJobFinished:
+			logger.Debug("job output", "job", e.Job.Name, "stdout", truncateForLog(e.Result.Stdout), "stderr", truncateForLog(e.Result.Stderr))
+			logger.Info("job finished", "job", e.Job.Name, "exit_code", e.Result.ExitCode, "duration", e.Result.Duration)
+		case scheduling.EventJobFailed:
+			logger.Debug("job output", "job", e.Job.Name, "stdout", truncateForLog(e.Result.Stdout))
+			logger.Error("job failed", "job", e.Job.Name, "exit_code", e.Result.ExitCode, "duration", e.Result.Duration, "error", e.Err, "stderr", truncateForLog(e.Result.Stderr))
+		case scheduling.EventJobSkipped:
+			logger.Warn("job skipped: previous run still in progress", "job", e.Job.Name)
+		case scheduling.EventJobPanicked:
+			logger.Error("job panicked", "job", e.Job.Name, "panic", e.Err)
+		}
+	})
+}
+
+const (
+	maxLoggedOutput = 4 * 1024
+	truncatedMark   = "...(truncated)"
+)
+
+// truncateForLog caps s at maxLoggedOutput bytes (on a rune boundary) and marks the cut.
+func truncateForLog(s string) string {
+	if len(s) <= maxLoggedOutput {
+		return s
+	}
+	n := maxLoggedOutput
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n] + truncatedMark
 }

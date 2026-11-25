@@ -1,13 +1,9 @@
 package scheduling
 
 import (
-	"bytes"
 	"context"
 	"errors"
-	"log/slog"
-	"strings"
 	"testing"
-	"unicode/utf8"
 )
 
 type fakeLoader struct {
@@ -59,15 +55,19 @@ func (f *fakeScheduler) Stop(ctx context.Context) error {
 	return f.stopErr
 }
 
-func newSvc(l fakeLoader, r *fakeRunner, s *fakeScheduler, logs *bytes.Buffer) UseCase {
-	return NewService(l, r, s, slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
+type recordingObserver struct {
+	events []Event
+}
+
+func (o *recordingObserver) Observe(_ context.Context, e Event) {
+	o.events = append(o.events, e)
 }
 
 func TestStartRegistersStartsAndStops(t *testing.T) {
-	var logs bytes.Buffer
+	obs := &recordingObserver{}
 	sched := &fakeScheduler{}
 	runner := &fakeRunner{res: Result{ExitCode: 0}}
-	uc := newSvc(fakeLoader{jobs: []Job{{Name: "a"}, {Name: "b"}}}, runner, sched, &logs)
+	uc := NewService(fakeLoader{jobs: []Job{{Name: "a"}, {Name: "b"}}}, runner, sched, obs)
 
 	if err := uc.Start(context.Background(), "x.yml"); err != nil {
 		t.Fatal(err)
@@ -75,13 +75,16 @@ func TestStartRegistersStartsAndStops(t *testing.T) {
 	if len(sched.fns) != 2 || !sched.started || sched.stopped {
 		t.Fatalf("sched = %+v", sched)
 	}
+	if len(obs.events) != 3 || obs.events[0].Kind != EventJobRegistered || obs.events[2].Kind != EventSchedulerStarted || obs.events[2].JobCount != 2 {
+		t.Fatalf("unexpected start events: %+v", obs.events)
+	}
 
 	sched.fns["a"](context.Background())
 	if len(runner.ran) != 1 || runner.ran[0] != "a" {
 		t.Fatalf("ran = %v", runner.ran)
 	}
-	if !strings.Contains(logs.String(), "job finished") || !strings.Contains(logs.String(), "exit_code=0") {
-		t.Fatalf("logs = %s", logs.String())
+	if len(obs.events) != 5 || obs.events[3].Kind != EventJobStarted || obs.events[4].Kind != EventJobFinished {
+		t.Fatalf("unexpected run events: %+v", obs.events)
 	}
 
 	stopCtx, cancel := context.WithCancel(context.Background())
@@ -94,20 +97,29 @@ func TestStartRegistersStartsAndStops(t *testing.T) {
 	}
 }
 
-func TestJobFailureIsLogged(t *testing.T) {
-	var logs bytes.Buffer
+func TestJobFailureIsObserved(t *testing.T) {
+	obs := &recordingObserver{}
 	sched := &fakeScheduler{}
-	runner := &fakeRunner{res: Result{ExitCode: 3, Stderr: "boom"}, err: errors.New("exit status 3")}
-	uc := newSvc(fakeLoader{jobs: []Job{{Name: "a"}}}, runner, sched, &logs)
+	boom := errors.New("exit status 3")
+	runner := &fakeRunner{res: Result{ExitCode: 3, Stderr: "boom"}, err: boom}
+	uc := NewService(fakeLoader{jobs: []Job{{Name: "a"}}}, runner, sched, obs)
 	if err := uc.Start(context.Background(), "x.yml"); err != nil {
 		t.Fatal(err)
 	}
 	sched.fns["a"](context.Background())
-	for _, want := range []string{"job failed", "exit_code=3", "boom"} {
-		if !strings.Contains(logs.String(), want) {
-			t.Errorf("logs missing %q: %s", want, logs.String())
-		}
+	last := obs.events[len(obs.events)-1]
+	if last.Kind != EventJobFailed || !errors.Is(last.Err, boom) || last.Result.ExitCode != 3 || last.Result.Stderr != "boom" {
+		t.Fatalf("unexpected failed event: %+v", last)
 	}
+}
+
+func TestNilObserverIsSafe(t *testing.T) {
+	sched := &fakeScheduler{}
+	uc := NewService(fakeLoader{jobs: []Job{{Name: "a"}}}, &fakeRunner{}, sched, nil)
+	if err := uc.Start(context.Background(), "x.yml"); err != nil {
+		t.Fatal(err)
+	}
+	sched.fns["a"](context.Background())
 }
 
 func TestLifecycleErrors(t *testing.T) {
@@ -125,8 +137,7 @@ func TestLifecycleErrors(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			var logs bytes.Buffer
-			uc := newSvc(tt.loader, &fakeRunner{}, tt.sched, &logs)
+			uc := NewService(tt.loader, &fakeRunner{}, tt.sched, &recordingObserver{})
 			err := uc.Start(context.Background(), "x.yml")
 			if tt.stop {
 				if err != nil {
@@ -141,59 +152,5 @@ func TestLifecycleErrors(t *testing.T) {
 				t.Error("scheduler must not start after a setup error")
 			}
 		})
-	}
-}
-
-func TestJobOutputIsTruncatedInLog(t *testing.T) {
-	var logs bytes.Buffer
-	sched := &fakeScheduler{}
-	big := strings.Repeat("x", 64*1024)
-	runner := &fakeRunner{res: Result{Stdout: big, Stderr: "é" + big}}
-	uc := newSvc(fakeLoader{jobs: []Job{{Name: "a"}}}, runner, sched, &logs)
-	if err := uc.Start(context.Background(), "x.yml"); err != nil {
-		t.Fatal(err)
-	}
-	sched.fns["a"](context.Background())
-	if !strings.Contains(logs.String(), "...(truncated)") || logs.Len() > 3*maxLoggedOutput {
-		t.Fatalf("log not truncated, len=%d", logs.Len())
-	}
-	if got := truncateForLog("short"); got != "short" {
-		t.Fatalf("short output changed: %q", got)
-	}
-	// cut must not split a multi-byte rune
-	got := truncateForLog(strings.Repeat("é", maxLoggedOutput))
-	if !utf8.ValidString(got) || !strings.HasSuffix(got, truncatedMark) {
-		t.Fatalf("invalid truncation")
-	}
-}
-
-func TestOutputLogLevels(t *testing.T) {
-	run := func(res Result, err error) string {
-		var logs bytes.Buffer
-		logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelInfo}))
-		sched := &fakeScheduler{}
-		uc := NewService(fakeLoader{jobs: []Job{{Name: "a"}}}, &fakeRunner{res: res, err: err}, sched, logger)
-		if e := uc.Start(context.Background(), "x.yml"); e != nil {
-			t.Fatal(e)
-		}
-		sched.fns["a"](context.Background())
-		return logs.String()
-	}
-	ok := run(Result{Stdout: "OUT", Stderr: "ERR"}, nil)
-	if strings.Contains(ok, "OUT") || strings.Contains(ok, "ERR") || !strings.Contains(ok, "job finished") {
-		t.Fatalf("info-level success must not log output: %s", ok)
-	}
-	failed := run(Result{Stdout: "OUT", Stderr: "ERR"}, errors.New("x"))
-	if strings.Contains(failed, "OUT") || !strings.Contains(failed, "ERR") {
-		t.Fatalf("failure should log stderr but not stdout at info: %s", failed)
-	}
-
-	var dbg bytes.Buffer
-	sched := &fakeScheduler{}
-	uc := newSvc(fakeLoader{jobs: []Job{{Name: "a"}}}, &fakeRunner{res: Result{Stdout: "OUT", Stderr: "ERR"}}, sched, &dbg)
-	_ = uc.Start(context.Background(), "x.yml")
-	sched.fns["a"](context.Background())
-	if !strings.Contains(dbg.String(), "level=DEBUG") || !strings.Contains(dbg.String(), "stdout=OUT") || !strings.Contains(dbg.String(), "stderr=ERR") {
-		t.Fatalf("debug should log stdout and stderr: %s", dbg.String())
 	}
 }

@@ -37,6 +37,10 @@ var (
 	ErrNegativeTimeout = errors.New("timeout must not be negative")
 	// ErrDuplicateJob indicates a repeated job name in the same configuration.
 	ErrDuplicateJob = errors.New("duplicate name")
+	// ErrJobSkipped indicates a trigger was skipped because a prior run is still active.
+	ErrJobSkipped = errors.New("previous run still in progress")
+	// ErrJobPanicked indicates a job execution panicked.
+	ErrJobPanicked = errors.New("job panicked")
 )
 
 // Job is a scheduled unit of work.
@@ -87,6 +91,48 @@ type Result struct {
 	Duration time.Duration
 	Stdout   string
 	Stderr   string
+}
+
+// EventKind identifies a scheduling or job execution lifecycle event.
+type EventKind string
+
+const (
+	// EventJobRegistered signals that a job was registered in the scheduler.
+	EventJobRegistered EventKind = "job_registered"
+	// EventSchedulerStarted signals that the scheduler started dispatching jobs.
+	EventSchedulerStarted EventKind = "scheduler_started"
+	// EventJobStarted signals that a job run began.
+	EventJobStarted EventKind = "job_started"
+	// EventJobFinished signals that a job run completed with zero exit code.
+	EventJobFinished EventKind = "job_finished"
+	// EventJobFailed signals that a job run failed.
+	EventJobFailed EventKind = "job_failed"
+	// EventJobSkipped signals that a trigger was skipped because the job was already running.
+	EventJobSkipped EventKind = "job_skipped"
+	// EventJobPanicked signals that a job run panicked and was recovered.
+	EventJobPanicked EventKind = "job_panicked"
+)
+
+// Event carries a scheduling lifecycle event or asynchronous job error to the entrypoint.
+type Event struct {
+	Kind     EventKind
+	Job      Job
+	JobCount int
+	Result   Result
+	Err      error
+}
+
+// Observer receives scheduling lifecycle events and asynchronous job errors.
+type Observer interface {
+	Observe(ctx context.Context, e Event)
+}
+
+// ObserverFunc adapts a function to Observer.
+type ObserverFunc func(ctx context.Context, e Event)
+
+// Observe implements Observer.
+func (f ObserverFunc) Observe(ctx context.Context, e Event) {
+	f(ctx, e)
 }
 
 // UseCase defines the job scheduling application operations.
