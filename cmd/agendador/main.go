@@ -10,17 +10,14 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
-	"time"
 
+	"github.com/danielmalka/agendador-go/config"
 	"github.com/danielmalka/agendador-go/internal/app"
-	"github.com/danielmalka/agendador-go/internal/config"
+	yamlconfig "github.com/danielmalka/agendador-go/internal/config"
 	"github.com/danielmalka/agendador-go/internal/executor"
 	"github.com/danielmalka/agendador-go/internal/scheduler"
 )
-
-const defaultShutdownTimeout = 30 * time.Second
 
 func main() {
 	ctx, cancel := context.WithCancel(context.Background())
@@ -49,49 +46,23 @@ func escalate(sigs <-chan os.Signal, graceful, force context.CancelFunc) {
 	force()
 }
 
-func parseLogLevel(name string) (slog.Level, error) {
-	switch strings.ToLower(name) {
-	case "debug":
-		return slog.LevelDebug, nil
-	case "info":
-		return slog.LevelInfo, nil
-	case "warn":
-		return slog.LevelWarn, nil
-	case "error":
-		return slog.LevelError, nil
-	}
-	return 0, fmt.Errorf("usage: -log-level must be debug, info, warn or error, got %q", name)
-}
-
 // run is the composition root: it wires adapters into the use case.
 func run(ctx, forceCtx context.Context, args []string, stdout, stderr io.Writer) error {
-	fs := flag.NewFlagSet("agendador", flag.ContinueOnError)
-	fs.SetOutput(stderr)
-	configPath := fs.String("config", "configs/jobs.yml", "path to the jobs YAML file")
-	shutdownTimeout := fs.Duration("shutdown-timeout", defaultShutdownTimeout, "how long to wait for running jobs on shutdown (must be > 0)")
-	logLevel := fs.String("log-level", "info", "log level: debug, info, warn or error")
-	if err := fs.Parse(args); err != nil {
+	cfg, err := config.Load(args, stderr)
+	if err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return nil // usage was already printed
 		}
 		return err
 	}
-	if *shutdownTimeout <= 0 {
-		return fmt.Errorf("usage: -shutdown-timeout must be greater than zero, got %s", *shutdownTimeout)
-	}
 
-	level, err := parseLogLevel(*logLevel)
-	if err != nil {
-		return err
-	}
-
-	logger := slog.New(slog.NewTextHandler(stdout, &slog.HandlerOptions{Level: level}))
+	logger := slog.New(slog.NewTextHandler(stdout, &slog.HandlerOptions{Level: cfg.LogLevel}))
 	svc := app.NewService(
-		config.NewYAMLLoader(scheduler.ValidateSchedule),
+		yamlconfig.NewYAMLLoader(scheduler.ValidateSchedule),
 		executor.NewRunner(executor.DefaultMaxOutput),
 		scheduler.NewCron(logger),
 		logger,
-		*shutdownTimeout,
+		cfg.ShutdownTimeout,
 	)
-	return svc.Run(ctx, forceCtx, *configPath)
+	return svc.Run(ctx, forceCtx, cfg.JobsPath)
 }

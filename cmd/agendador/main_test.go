@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"context"
-	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -79,12 +78,7 @@ func TestEscalateFirstSignalGracefulSecondForced(t *testing.T) {
 	<-forced.Done() // the test timeout guards against a hang
 }
 
-func TestParseLogLevel(t *testing.T) {
-	for in, want := range map[string]slog.Level{"debug": slog.LevelDebug, "INFO": slog.LevelInfo, "warn": slog.LevelWarn, "error": slog.LevelError} {
-		if got, err := parseLogLevel(in); err != nil || got != want {
-			t.Errorf("%s: got %v, %v", in, got, err)
-		}
-	}
+func TestRunInvalidLogLevel(t *testing.T) {
 	err := run(cancelled(), context.Background(), []string{"-log-level", "loud"}, &bytes.Buffer{}, &bytes.Buffer{})
 	if err == nil || !strings.Contains(err.Error(), "log-level") {
 		t.Fatalf("err = %v, want usage error", err)
