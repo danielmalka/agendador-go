@@ -28,7 +28,7 @@ Agendador de tarefas em Go. Lê um arquivo YAML com a lista de jobs e executa ca
 - Go `1.27.1` ou superior (campo `go` do `go.mod`), apenas para compilar.
 - Linux ou macOS. O isolamento por process group (`Setpgid` e kill do grupo) existe só em sistemas Unix.
 - Python 3 no `PATH` (ou outro interpretador informado em `interpreter`), apenas se você usar jobs `type: python`.
-- Windows: o código tem um caminho alternativo (`internal/executor/runner_other.go`) que mata somente o processo direto, sem os netos. Esse caminho não é exercitado pelos testes do projeto; trate o Windows como não suportado.
+- Windows: o código tem um caminho alternativo (`internal/scheduling/exec/runner_other.go`) que mata somente o processo direto, sem os netos. Esse caminho não é exercitado pelos testes do projeto; trate o Windows como não suportado.
 
 ## Instalação e build
 
@@ -286,28 +286,32 @@ O `docker stop` envia `SIGTERM` ao PID 1 e espera 10 s por padrão; para usar um
 ## Arquitetura
 
 ```
-cmd/agendador          composition root: flags, logger, sinais, injeção das dependências
-internal/app           use case: carrega, agenda, executa e encerra
-internal/domain        entidade Job, Result e as ports (interfaces); não depende de nada
-internal/config        adapter YAML da port ConfigLoader
-internal/executor      adapter os/exec da port Runner
-internal/scheduler     adapter robfig/cron da port Scheduler
+cmd/agendador                  composition root: sinais, logger, injeção das dependências e saída de eventos/erros
+config                         carregamento e validação das flags/configurações da CLI
+internal/scheduling            domínio: entidades (Job, Result, Event), erros sentinela, ports e service (UseCase)
+internal/scheduling/yaml       driven adapter YAML da port JobLoader
+internal/scheduling/exec       driven adapter os/exec da port Runner
+internal/scheduling/cron       driven adapter robfig/cron das ports Scheduler e ScheduleValidator
+internal/scheduling/mock       test doubles das ports do domínio
 ```
 
-Ports (`internal/domain/ports.go`):
+Ports (`internal/scheduling/scheduling.go`):
 
-- `ConfigLoader`: `Load(path) ([]Job, error)`
-- `Runner`: `Run(ctx, job) (Result, error)`
-- `Scheduler`: `Add(job, fn)`, `Start()`, `Stop(ctx)`
+- `UseCase`: `Start(ctx, configPath)`, `Stop(ctx)`
+- `JobLoader`: `Load(ctx, path) ([]Job, error)`
+- `ScheduleValidator`: `Validate(ctx, s) error`
+- `Runner`: `Run(ctx, j) (Result, error)`
+- `Scheduler`: `Add(ctx, j, fn)`, `Start(ctx)`, `Stop(ctx)`
+- `Observer`: `Observe(ctx, e)`
 
-A direção das dependências é sempre dos adapters e do use case **para** o `domain`; o `domain` não importa nenhum outro pacote do projeto. Só `cmd/agendador` conhece os adapters concretos. O loader recebe a validação de schedule por injeção (`scheduler.ValidateSchedule`), o que o mantém independente da biblioteca de cron.
+A direção das dependências é sempre dos adapters **para** o pacote de domínio `internal/scheduling`; o domínio não importa nenhum outro pacote do projeto nem frameworks/loggers. Só `cmd/agendador` conhece os adapters concretos e traduz `Event`/erros para logs (`slog`) e código de saída. O loader recebe a validação de schedule por injeção (`ScheduleValidator`, implementada por `cron.Validator`), mantendo-o independente da biblioteca de cron.
 
 ### Como acrescentar um novo tipo de job
 
-1. Em `internal/domain/job.go`, adicione a constante `JobType` e aceite-a em `Validate()`.
+1. Em `internal/scheduling/scheduling.go`, adicione a constante `JobType` e aceite-a em `Job.Validate()`.
 2. Em `Job.Argv()` (mesmo arquivo), devolva o executável e os argumentos desse tipo.
-3. Se o tipo precisar de campo novo no YAML, acrescente-o em `jobDTO` e em `toJob` (`internal/config/yaml_loader.go`) e em `domain.Job`.
-4. Acrescente testes em `internal/domain/job_test.go` e `internal/config/yaml_loader_test.go`, documente o tipo neste README e atualize `configs/jobs.example.yml`.
+3. Se o tipo precisar de campo novo no YAML, acrescente-o em `jobDTO` e em `toJob` (`internal/scheduling/yaml/loader.go`) e em `scheduling.Job`.
+4. Acrescente testes em `internal/scheduling/job_test.go` e `internal/scheduling/yaml/loader_test.go`, documente o tipo neste README e atualize `configs/jobs.example.yml`.
 
 O executor não precisa mudar enquanto o novo tipo se resumir a "um executável com argumentos".
 
@@ -321,7 +325,7 @@ O executor não precisa mudar enquanto o novo tipo se resumir a "um executável 
 | `make vet` | `go vet ./...`. |
 | `make run` | `go run ./cmd/agendador -config configs/jobs.yml`. |
 
-Os testes do executor (`internal/executor`) dependem de utilitários Unix (por exemplo, `sh`, `sleep`, `echo`) e dos recursos de process group; não rodam em Windows.
+Os testes do executor (`internal/scheduling/exec`) dependem de utilitários Unix (por exemplo, `sh`, `sleep`, `echo`) e dos recursos de process group; não rodam em Windows.
 
 ## Limitações e fora de escopo
 

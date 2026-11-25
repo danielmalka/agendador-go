@@ -39,8 +39,8 @@ func (r *Runner) Run(ctx context.Context, j scheduling.Job) (scheduling.Result, 
 		defer cancel()
 	}
 
-	bin, args := j.Argv()
-	cmd := osexec.CommandContext(ctx, bin, args...)
+	bin, aa := j.Argv()
+	cmd := osexec.CommandContext(ctx, bin, aa...)
 	cmd.Dir = j.WorkDir
 	cmd.Env = buildEnv(j.Env)
 	cmd.WaitDelay = waitDelay
@@ -70,11 +70,11 @@ func classify(ctx context.Context, err error) error {
 }
 
 func buildEnv(extra map[string]string) []string {
-	env := os.Environ()
+	ee := os.Environ()
 	for k, v := range extra {
-		env = append(env, k+"="+v)
+		ee = append(ee, k+"="+v)
 	}
-	return env
+	return ee
 }
 
 // cappedBuffer keeps the first max bytes and silently discards the rest, so the
