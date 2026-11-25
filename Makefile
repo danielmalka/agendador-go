@@ -5,7 +5,7 @@ MIN_COVER := 80
 .PHONY: build test cover vet run
 
 build:
-	go build -o bin/agendador ./cmd/agendador
+	go build -o bin/scheduler ./cmd/scheduler
 
 test:
 	go test ./... $(RACE) -count=1
@@ -18,4 +18,4 @@ vet:
 	go vet ./...
 
 run:
-	go run ./cmd/agendador -config configs/jobs.yml
+	go run ./cmd/scheduler -config configs/jobs.yml

@@ -12,16 +12,17 @@ Agendador de tarefas em Go. Lê um arquivo YAML com a lista de jobs e executa ca
 1. [Requisitos](#requisitos)
 2. [Instalação e build](#instalação-e-build)
 3. [Uso](#uso)
-4. [Referência do YAML](#referência-do-yaml)
-5. [Expressões de schedule](#expressões-de-schedule)
-6. [Comportamento em execução](#comportamento-em-execução)
-7. [Shutdown](#shutdown)
-8. [Logs](#logs)
-9. [Rodando como serviço](#rodando-como-serviço)
-10. [Segurança](#segurança)
-11. [Arquitetura](#arquitetura)
-12. [Desenvolvimento](#desenvolvimento)
-13. [Limitações e fora de escopo](#limitações-e-fora-de-escopo)
+4. [How To](#how-to)
+5. [Referência do YAML](#referência-do-yaml)
+6. [Expressões de schedule](#expressões-de-schedule)
+7. [Comportamento em execução](#comportamento-em-execução)
+8. [Shutdown](#shutdown)
+9. [Logs](#logs)
+10. [Rodando como serviço](#rodando-como-serviço)
+11. [Segurança](#segurança)
+12. [Arquitetura](#arquitetura)
+13. [Desenvolvimento](#desenvolvimento)
+14. [Limitações e fora de escopo](#limitações-e-fora-de-escopo)
 
 ## Requisitos
 
@@ -33,13 +34,13 @@ Agendador de tarefas em Go. Lê um arquivo YAML com a lista de jobs e executa ca
 ## Instalação e build
 
 ```sh
-make build        # gera bin/agendador
+make build        # gera bin/scheduler
 ```
 
-O binário fica em `bin/agendador`. Equivalente sem o Makefile:
+O binário fica em `bin/scheduler`. Equivalente sem o Makefile:
 
 ```sh
-go build -o bin/agendador ./cmd/agendador
+go build -o bin/scheduler ./cmd/scheduler
 ```
 
 Para rodar sem gerar o binário (o `make run` usa `configs/jobs.yml`):
@@ -48,13 +49,13 @@ Para rodar sem gerar o binário (o `make run` usa `configs/jobs.yml`):
 cp configs/jobs.example.yml configs/jobs.yml
 make run
 # ou
-go run ./cmd/agendador -config configs/jobs.yml
+go run ./cmd/scheduler -config configs/jobs.yml
 ```
 
 ## Uso
 
 ```sh
-./bin/agendador -config configs/jobs.yml -shutdown-timeout 30s -log-level info
+./bin/scheduler -config configs/jobs.yml -shutdown-timeout 30s -log-level info
 ```
 
 | Flag | Padrão | Validação |
@@ -71,6 +72,155 @@ Não há outras flags. O processo roda em primeiro plano até receber `SIGINT` o
 |---|---|
 | `0` | Shutdown por sinal em que todos os jobs em execução terminaram dentro do `-shutdown-timeout`; ou `-h`/`-help`, que imprime só o usage, sem a linha `error:`. |
 | `1` | Qualquer erro: flag inválida, YAML inválido, schedule inválido, `-shutdown-timeout` esgotado com jobs ainda rodando, ou segundo sinal. A mensagem vai para o stderr com o prefixo `error:`. |
+
+## How To
+
+Exemplos práticos de tudo o que pode ser configurado e executado com o `agendador-go`.
+
+### 1. Rodar um script Python com argumentos
+
+Use `type: python` informando o caminho do script em `command` e os argumentos em `args`. Por padrão, o agendador executa com `python3`:
+
+```yaml
+jobs:
+  # Executa: python3 scripts/hello.py --name world
+  - name: hello-python
+    schedule: "*/1 * * * *"
+    type: python
+    command: scripts/hello.py
+    args: ["--name", "world"]
+```
+
+### 2. Usar um virtualenv ou versão específica do Python
+
+Informe o caminho completo ou o binário desejado em `interpreter` (opcionalmente combinando com `workdir`):
+
+```yaml
+jobs:
+  # Executa dentro de /srv/etl: /srv/etl/.venv/bin/python pipeline.py --full
+  - name: etl-venv
+    schedule: "0 3 * * *"
+    type: python
+    interpreter: /srv/etl/.venv/bin/python
+    command: pipeline.py
+    args: ["--full"]
+    workdir: /srv/etl
+```
+
+### 3. Executar qualquer CLI, script binário ou ferramenta do sistema
+
+Use `type: command` para chamar qualquer executável no `PATH` ou por caminho absoluto, passando flags em `args` (sem interpretação de shell):
+
+```yaml
+jobs:
+  # Executa: curl -fsS https://api.exemplo.local/health
+  - name: healthcheck
+    schedule: "@every 30s"
+    type: command
+    command: curl
+    args: ["-fsS", "https://api.exemplo.local/health"]
+    timeout: 10s
+```
+
+### 4. Escolher diferentes formatos de agendamento
+
+Você pode combinar expressões cron de 5 campos, 6 campos (segundos no início), descritores e timezone por job:
+
+```yaml
+jobs:
+  # A cada 15 minutos
+  - name: sync-15m
+    schedule: "*/15 * * * *"
+    type: command
+    command: /usr/local/bin/sync-dados
+
+  # Todo dia útil às 08:30 (horário de São Paulo, independente do TZ do host)
+  - name: abertura-sp
+    schedule: "CRON_TZ=America/Sao_Paulo 30 8 * * 1-5"
+    type: python
+    command: scripts/abertura.py
+
+  # Com segundos no início: a cada 5 minutos, exatamente no segundo 10
+  - name: coleta-precisa
+    schedule: "10 */5 * * * *"
+    type: command
+    command: /usr/local/bin/coletar
+
+  # Descritor de intervalo fixo
+  - name: heartbeat
+    schedule: "@every 1m30s"
+    type: command
+    command: echo
+    args: ["alive"]
+```
+
+### 5. Definir timeout para evitar jobs travados
+
+Configure `timeout` com qualquer duração Go válida (`10s`, `5m`, `1h30m`). Se o tempo estourar, todo o *process group* (incluindo processos filhos e netos) recebe `SIGKILL`:
+
+```yaml
+jobs:
+  - name: importacao-limitada
+    schedule: "@hourly"
+    type: python
+    command: scripts/importar.py
+    timeout: 5m
+```
+
+### 6. Injetar variáveis de ambiente e definir diretório de trabalho
+
+Use `env` para adicionar ou sobrescrever variáveis herdadas pelo processo e `workdir` para rodar o comando a partir de um diretório específico:
+
+```yaml
+jobs:
+  - name: relatorio-csv
+    schedule: "@daily"
+    type: command
+    command: ./gerar-relatorio
+    args: ["--saida", "out/diario.csv"]
+    workdir: /srv/relatorios
+    env:
+      LC_ALL: C
+      APP_ENV: production
+```
+
+### 7. Usar recursos de shell como pipes e redirecionamentos
+
+Por segurança, o agendador nunca passa comandos por um shell. Quando você realmente precisar de pipes (`|`), redirecionamentos (`>`), `&&` ou expansão de variáveis (`$VAR`), invoque `sh` explicitamente com `-c`:
+
+```yaml
+jobs:
+  - name: contar-erros
+    schedule: "@hourly"
+    type: command
+    command: sh
+    args: ["-c", "grep -c ERROR /var/log/app.log > /tmp/erros.txt"]
+```
+
+> **Atenção:** com `sh -c`, nunca interpole dados não confiáveis na string do comando. Sempre que possível, prefira encapsular a lógica em um script dedicado (`type: python`).
+
+### 8. Depurar saída (`stdout` e `stderr`) dos jobs pelos logs
+
+Em nível padrão (`info`), execuções bem-sucedidas não exibem `stdout`/`stderr` e falhas exibem apenas `stderr`. Para inspecionar `stdout` e `stderr` completos (até 4 KiB nos logs), rode com `-log-level debug`:
+
+```sh
+./bin/scheduler -config configs/jobs.yml -log-level debug
+```
+
+### 9. Ajustar o tempo de espera no encerramento (graceful shutdown)
+
+Se você tiver jobs longos que precisam de mais que os `30s` padrão para finalizar ao receber `SIGTERM`/`SIGINT`, aumente `-shutdown-timeout`:
+
+```sh
+./bin/scheduler -config configs/jobs.yml -shutdown-timeout 2m
+```
+
+- Enviar um **1º sinal** (`Ctrl+C` ou `SIGTERM`) interrompe novos disparos e aguarda os jobs em andamento até `2m`.
+- Enviar um **2º sinal** aborta a espera imediatamente, mata os jobs em execução e encerra com código `1`.
+
+### 10. Validação automática na inicialização
+
+O agendador não possui uma flag dedicada de *dry-run*, mas valida todo o arquivo antes de iniciar: sintaxe YAML, campos desconhecidos, nomes duplicados, `timeout` e todas as expressões de `schedule`. Se houver qualquer erro, ele imprime `error: load config: ...` no stderr e encerra imediatamente com código `1` antes de agendar qualquer job.
 
 ## Referência do YAML
 
@@ -174,17 +324,7 @@ Escreva sempre a expressão entre aspas no YAML (`"*/5 * * * *"`), pois `*` e `@
 - **Exit code.** Código diferente de zero é uma falha (`job failed`, log level `ERROR`). `exit_code=-1` indica que o processo foi morto por sinal ou nunca iniciou (por exemplo, executável inexistente ou `workdir` inválido; o motivo vai no campo `error`).
 - **Captura de output.** Stdout e stderr são capturados separadamente, **64 KiB cada**. Acima disso mantêm-se os primeiros 64 KiB e o resto é descartado em silêncio (o processo filho não trava por pipe cheio). Depois, o log aplica um corte adicional de 4 KiB (veja [Logs](#logs)).
 - **Ambiente.** O processo herda o ambiente do agendador; `env` do job soma ou sobrescreve variáveis.
-- **Sem shell.** Pipes (`|`), redirecionamentos (`>`), `&&`, `$VAR`, `~` e curingas (`*`) **não** são interpretados: viram argumentos literais. Se você realmente precisa deles, chame o shell explicitamente:
-
-  ```yaml
-  - name: contar-linhas
-    schedule: "@hourly"
-    type: command
-    command: sh
-    args: ["-c", "grep -c ERROR /var/log/app.log > /tmp/erros.txt"]
-  ```
-
-  > **Aviso:** com `sh -c` você volta a ter todos os riscos de injeção de shell. Nunca monte a string do comando com dados não confiáveis. Prefira um script dedicado (por exemplo, um `.py`) chamado como `type: python`.
+- **Sem shell.** Pipes (`|`), redirecionamentos (`>`), `&&`, `$VAR`, `~` e curingas (`*`) **não** são interpretados: viram argumentos literais. Caso precise explicitamente de shell, veja o exemplo com `sh -c` na seção [How To](#7-usar-recursos-de-shell-como-pipes-e-redirecionamentos).
 - **Panic.** Um panic dentro da execução de um job é recuperado e logado em `ERROR` (`job panicked`); o agendador e os demais jobs continuam.
 
 ## Shutdown
@@ -223,7 +363,7 @@ After=network.target
 
 [Service]
 User=agendador
-ExecStart=/opt/agendador/bin/agendador -config /etc/agendador/jobs.yml -shutdown-timeout 30s
+ExecStart=/opt/agendador/bin/scheduler -config /etc/agendador/jobs.yml -shutdown-timeout 30s
 WorkingDirectory=/opt/agendador
 KillSignal=SIGTERM
 # O padrão (control-group) manda SIGTERM a todo o cgroup, inclusive aos jobs (que rodam em process
@@ -253,13 +393,13 @@ Exemplo mínimo (apenas um trecho ilustrativo; ajuste a imagem do Go para a vers
 FROM golang:1.27 AS build
 WORKDIR /src
 COPY . .
-RUN CGO_ENABLED=0 go build -o /agendador ./cmd/agendador
+RUN CGO_ENABLED=0 go build -o /scheduler ./cmd/scheduler
 
 FROM python:3-slim
-COPY --from=build /agendador /usr/local/bin/agendador
+COPY --from=build /scheduler /usr/local/bin/scheduler
 COPY scripts/ /app/scripts/
 WORKDIR /app
-ENTRYPOINT ["agendador"]
+ENTRYPOINT ["scheduler"]
 CMD ["-config", "/etc/agendador/jobs.yml"]
 ```
 
@@ -286,7 +426,7 @@ O `docker stop` envia `SIGTERM` ao PID 1 e espera 10 s por padrão; para usar um
 ## Arquitetura
 
 ```
-cmd/agendador                  composition root: sinais, logger, injeção das dependências e saída de eventos/erros
+cmd/scheduler                  composition root: sinais, logger, injeção das dependências e saída de eventos/erros
 config                         carregamento e validação das flags/configurações da CLI
 internal/scheduling            domínio: entidades (Job, Result, Event), erros sentinela, ports e service (UseCase)
 internal/scheduling/yaml       driven adapter YAML da port JobLoader
@@ -304,7 +444,7 @@ Ports (`internal/scheduling/scheduling.go`):
 - `Scheduler`: `Add(ctx, j, fn)`, `Start(ctx)`, `Stop(ctx)`
 - `Observer`: `Observe(ctx, e)`
 
-A direção das dependências é sempre dos adapters **para** o pacote de domínio `internal/scheduling`; o domínio não importa nenhum outro pacote do projeto nem frameworks/loggers. Só `cmd/agendador` conhece os adapters concretos e traduz `Event`/erros para logs (`slog`) e código de saída. O loader recebe a validação de schedule por injeção (`ScheduleValidator`, implementada por `cron.Validator`), mantendo-o independente da biblioteca de cron.
+A direção das dependências é sempre dos adapters **para** o pacote de domínio `internal/scheduling`; o domínio não importa nenhum outro pacote do projeto nem frameworks/loggers. Só `cmd/scheduler` conhece os adapters concretos e traduz `Event`/erros para logs (`slog`) e código de saída. O loader recebe a validação de schedule por injeção (`ScheduleValidator`, implementada por `cron.Validator`), mantendo-o independente da biblioteca de cron.
 
 ### Como acrescentar um novo tipo de job
 
@@ -313,17 +453,17 @@ A direção das dependências é sempre dos adapters **para** o pacote de domín
 3. Se o tipo precisar de campo novo no YAML, acrescente-o em `jobDTO` e em `toJob` (`internal/scheduling/yaml/loader.go`) e em `scheduling.Job`.
 4. Acrescente testes em `internal/scheduling/job_test.go` e `internal/scheduling/yaml/loader_test.go`, documente o tipo neste README e atualize `configs/jobs.example.yml`.
 
-O executor não precisa mudar enquanto o novo tipo se resumir a "um executável com argumentos".
+O runner (`internal/scheduling/exec`) não precisa mudar enquanto o novo tipo se resumir a "um executável com argumentos".
 
 ## Desenvolvimento
 
 | Alvo | O que faz |
 |---|---|
-| `make build` | Compila para `bin/agendador`. |
+| `make build` | Compila para `bin/scheduler`. |
 | `make test` | `go test ./... -count=1`, com `-race` quando há cgo e `gcc`. |
 | `make cover` | Gera `coverage.out` e **falha se o coverage total for menor que 80%**. |
 | `make vet` | `go vet ./...`. |
-| `make run` | `go run ./cmd/agendador -config configs/jobs.yml`. |
+| `make run` | `go run ./cmd/scheduler -config configs/jobs.yml`. |
 
 Os testes do executor (`internal/scheduling/exec`) dependem de utilitários Unix (por exemplo, `sh`, `sleep`, `echo`) e dos recursos de process group; não rodam em Windows.
 
@@ -334,4 +474,4 @@ Os testes do executor (`internal/scheduling/exec`) dependem de utilitários Unix
 - Sem API HTTP e sem metrics.
 - Sem persistência: não há histórico de execuções nem recuperação de triggers perdidos enquanto o agendador estava parado.
 - Sem queue: triggers que coincidem com uma execução em andamento são descartados.
-- Sem execução por shell; veja a seção de `sh -c` para o caso em que você a quer explicitamente.
+- Sem execução por shell; veja [Como usar `sh -c` no How To](#7-usar-recursos-de-shell-como-pipes-e-redirecionamentos) para o caso em que você a quer explicitamente.

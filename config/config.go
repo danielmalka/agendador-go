@@ -1,4 +1,4 @@
-// Package config loads and validates CLI startup settings for agendador.
+// Package config loads and validates CLI startup settings for scheduler.
 package config
 
 import (
@@ -34,7 +34,7 @@ type Config struct {
 
 // Load parses CLI flags from args, writing usage messages to stderr.
 func Load(args []string, stderr io.Writer) (Config, error) {
-	fs := flag.NewFlagSet("agendador", flag.ContinueOnError)
+	fs := flag.NewFlagSet("scheduler", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	jobsPath := fs.String("config", DefaultJobsPath, "path to the jobs YAML file")
 	shutdownTimeout := fs.Duration("shutdown-timeout", DefaultShutdownTimeout, "how long to wait for running jobs on shutdown (must be > 0)")

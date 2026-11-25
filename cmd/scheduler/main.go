@@ -1,4 +1,4 @@
-// Command agendador runs the jobs defined in a YAML file on their cron schedules.
+// Command scheduler runs the jobs defined in a YAML file on their cron schedules.
 package main
 
 import (
