@@ -1,4 +1,4 @@
-package config
+package yaml
 
 import (
 	"context"
@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/danielmalka/agendador-go/internal/scheduling"
+	"github.com/danielmalka/agendador-go/internal/scheduling/mock"
 )
 
 func writeYAML(t *testing.T, content string) string {
@@ -22,12 +23,14 @@ func writeYAML(t *testing.T, content string) string {
 	return p
 }
 
-var okSchedule = scheduling.ScheduleValidatorFunc(func(_ context.Context, spec scheduling.Schedule) error {
-	if strings.HasPrefix(string(spec), "bad") {
-		return errors.New("bad spec")
-	}
-	return nil
-})
+var okSchedule = &mock.ScheduleValidator{
+	Fn: func(_ context.Context, spec scheduling.Schedule) error {
+		if strings.HasPrefix(string(spec), "bad") {
+			return errors.New("bad spec")
+		}
+		return nil
+	},
+}
 
 func TestLoadValid(t *testing.T) {
 	p := writeYAML(t, `
@@ -46,7 +49,7 @@ jobs:
     type: command
     command: echo
 `)
-	jj, err := NewYAMLLoader(okSchedule).Load(context.Background(), p)
+	jj, err := NewLoader(okSchedule).Load(context.Background(), p)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -74,7 +77,7 @@ func TestLoadInvalid(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := NewYAMLLoader(okSchedule).Load(context.Background(), writeYAML(t, tt.yaml))
+			_, err := NewLoader(okSchedule).Load(context.Background(), writeYAML(t, tt.yaml))
 			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
 				t.Fatalf("error = %v, want containing %q", err, tt.wantErr)
 			}
@@ -83,7 +86,7 @@ func TestLoadInvalid(t *testing.T) {
 }
 
 func TestLoadMissingFile(t *testing.T) {
-	if _, err := NewYAMLLoader(okSchedule).Load(context.Background(), filepath.Join(t.TempDir(), "nope.yml")); err == nil {
+	if _, err := NewLoader(okSchedule).Load(context.Background(), filepath.Join(t.TempDir(), "nope.yml")); err == nil {
 		t.Fatal("want error for missing file")
 	}
 }

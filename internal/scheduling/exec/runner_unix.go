@@ -1,17 +1,17 @@
 //go:build unix
 
-package executor
+package exec
 
 import (
 	"errors"
 	"os"
-	"os/exec"
+	osexec "os/exec"
 	"syscall"
 )
 
 // configureProcessGroup runs the command in its own process group and, on
 // cancellation, kills the whole group so grandchildren do not outlive the job.
-func configureProcessGroup(cmd *exec.Cmd) {
+func configureProcessGroup(cmd *osexec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error {
 		err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)

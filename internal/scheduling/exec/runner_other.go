@@ -1,10 +1,10 @@
 //go:build !unix
 
-package executor
+package exec
 
-import "os/exec"
+import osexec "os/exec"
 
 // configureProcessGroup keeps the default behavior: only the direct child is killed.
-func configureProcessGroup(cmd *exec.Cmd) {
+func configureProcessGroup(cmd *osexec.Cmd) {
 	cmd.Cancel = func() error { return cmd.Process.Kill() }
 }

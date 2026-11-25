@@ -1,5 +1,5 @@
-// Package config loads job definitions from YAML files.
-package config
+// Package yaml adapts YAML files to the scheduling.JobLoader port.
+package yaml
 
 import (
 	"context"
@@ -9,21 +9,21 @@ import (
 	"os"
 	"time"
 
-	"gopkg.in/yaml.v3"
+	yamlv3 "gopkg.in/yaml.v3"
 
 	"github.com/danielmalka/agendador-go/internal/scheduling"
 )
 
-// YAMLLoader implements scheduling.JobLoader.
-type YAMLLoader struct {
+// Loader implements scheduling.JobLoader.
+type Loader struct {
 	validateSchedule scheduling.ScheduleValidator
 }
 
-var _ scheduling.JobLoader = (*YAMLLoader)(nil)
+var _ scheduling.JobLoader = (*Loader)(nil)
 
-// NewYAMLLoader builds a loader that validates schedules with the given validator.
-func NewYAMLLoader(validate scheduling.ScheduleValidator) *YAMLLoader {
-	return &YAMLLoader{validateSchedule: validate}
+// NewLoader builds a loader that validates schedules with the given validator.
+func NewLoader(validate scheduling.ScheduleValidator) *Loader {
+	return &Loader{validateSchedule: validate}
 }
 
 type fileDTO struct {
@@ -43,7 +43,7 @@ type jobDTO struct {
 }
 
 // Load reads path and returns the validated jobs.
-func (l *YAMLLoader) Load(ctx context.Context, path string) ([]scheduling.Job, error) {
+func (l *Loader) Load(ctx context.Context, path string) ([]scheduling.Job, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, fmt.Errorf("open config: %w", err)
@@ -51,7 +51,7 @@ func (l *YAMLLoader) Load(ctx context.Context, path string) ([]scheduling.Job, e
 	defer f.Close()
 
 	var file fileDTO
-	dec := yaml.NewDecoder(f)
+	dec := yamlv3.NewDecoder(f)
 	dec.KnownFields(true)
 	if err := dec.Decode(&file); err != nil && !errors.Is(err, io.EOF) {
 		return nil, fmt.Errorf("parse %s: %w", path, err)
@@ -80,7 +80,7 @@ func (l *YAMLLoader) Load(ctx context.Context, path string) ([]scheduling.Job, e
 	return jj, nil
 }
 
-func (l *YAMLLoader) toJob(ctx context.Context, dto jobDTO) (scheduling.Job, error) {
+func (l *Loader) toJob(ctx context.Context, dto jobDTO) (scheduling.Job, error) {
 	j := scheduling.Job{
 		Name:        dto.Name,
 		Schedule:    scheduling.Schedule(dto.Schedule),

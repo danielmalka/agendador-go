@@ -1,12 +1,12 @@
-// Package executor runs jobs as OS processes, never through a shell.
-package executor
+// Package exec runs jobs as OS processes, never through a shell.
+package exec
 
 import (
 	"bytes"
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
+	osexec "os/exec"
 	"time"
 
 	"github.com/danielmalka/agendador-go/internal/scheduling"
@@ -40,7 +40,7 @@ func (r *Runner) Run(ctx context.Context, j scheduling.Job) (scheduling.Result, 
 	}
 
 	bin, args := j.Argv()
-	cmd := exec.CommandContext(ctx, bin, args...)
+	cmd := osexec.CommandContext(ctx, bin, args...)
 	cmd.Dir = j.WorkDir
 	cmd.Env = buildEnv(j.Env)
 	cmd.WaitDelay = waitDelay

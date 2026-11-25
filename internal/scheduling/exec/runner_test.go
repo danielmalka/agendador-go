@@ -1,4 +1,4 @@
-package executor
+package exec
 
 import (
 	"context"
@@ -47,10 +47,10 @@ func TestRunCommandNotFound(t *testing.T) {
 }
 
 func TestRunTimeout(t *testing.T) {
-	job := cmdJob("sleep", "5")
-	job.Timeout = 100 * time.Millisecond
+	j := cmdJob("sleep", "5")
+	j.Timeout = 100 * time.Millisecond
 	start := time.Now()
-	_, err := NewRunner(DefaultMaxOutput).Run(context.Background(), job)
+	_, err := NewRunner(DefaultMaxOutput).Run(context.Background(), j)
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("err = %v, want deadline exceeded", err)
 	}
@@ -69,9 +69,9 @@ func TestRunCanceledContext(t *testing.T) {
 
 func TestRunEnv(t *testing.T) {
 	t.Setenv("AGD_INHERITED", "yes")
-	job := cmdJob("env")
-	job.Env = map[string]string{"AGD_EXTRA": "42"}
-	res, err := NewRunner(DefaultMaxOutput).Run(context.Background(), job)
+	j := cmdJob("env")
+	j.Env = map[string]string{"AGD_EXTRA": "42"}
+	res, err := NewRunner(DefaultMaxOutput).Run(context.Background(), j)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -88,9 +88,9 @@ func TestRunWorkDir(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer os.RemoveAll(dir)
-	job := cmdJob("pwd")
-	job.WorkDir = dir
-	res, err := NewRunner(DefaultMaxOutput).Run(context.Background(), job)
+	j := cmdJob("pwd")
+	j.WorkDir = dir
+	res, err := NewRunner(DefaultMaxOutput).Run(context.Background(), j)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -112,8 +112,8 @@ func TestRunOutputIsCapped(t *testing.T) {
 }
 
 func TestRunPythonUsesInterpreter(t *testing.T) {
-	job := scheduling.Job{Type: scheduling.TypePython, Interpreter: "echo", Command: "script.py", Args: []string{"a"}}
-	res, err := NewRunner(DefaultMaxOutput).Run(context.Background(), job)
+	j := scheduling.Job{Type: scheduling.TypePython, Interpreter: "echo", Command: "script.py", Args: []string{"a"}}
+	res, err := NewRunner(DefaultMaxOutput).Run(context.Background(), j)
 	if err != nil || strings.TrimSpace(res.Stdout) != "script.py a" {
 		t.Fatalf("err=%v stdout=%q", err, res.Stdout)
 	}

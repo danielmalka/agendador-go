@@ -1,6 +1,6 @@
 //go:build unix
 
-package executor
+package exec
 
 import (
 	"context"
@@ -22,13 +22,13 @@ func TestCancelKillsGrandchildren(t *testing.T) {
 	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	job := scheduling.Job{Type: scheduling.TypeCommand, Command: "sh",
+	j := scheduling.Job{Type: scheduling.TypeCommand, Command: "sh",
 		Args: []string{"-c", `sleep 300 & echo $! > "$1"; wait`, "sh", fifo}}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan error, 1)
-	go func() { _, err := NewRunner(DefaultMaxOutput).Run(ctx, job); done <- err }()
+	go func() { _, err := NewRunner(DefaultMaxOutput).Run(ctx, j); done <- err }()
 
 	raw, err := os.ReadFile(fifo) // blocks until the shell has started the grandchild
 	if err != nil {

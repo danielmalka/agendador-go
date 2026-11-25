@@ -14,10 +14,10 @@ import (
 	"unicode/utf8"
 
 	"github.com/danielmalka/agendador-go/config"
-	yamlconfig "github.com/danielmalka/agendador-go/internal/config"
-	"github.com/danielmalka/agendador-go/internal/executor"
-	"github.com/danielmalka/agendador-go/internal/scheduler"
 	"github.com/danielmalka/agendador-go/internal/scheduling"
+	"github.com/danielmalka/agendador-go/internal/scheduling/cron"
+	"github.com/danielmalka/agendador-go/internal/scheduling/exec"
+	"github.com/danielmalka/agendador-go/internal/scheduling/yaml"
 )
 
 func main() {
@@ -60,11 +60,9 @@ func run(ctx, forceCtx context.Context, args []string, stdout, stderr io.Writer)
 	logger := slog.New(slog.NewTextHandler(stdout, &slog.HandlerOptions{Level: cfg.LogLevel}))
 	obs := newLogObserver(logger)
 	uc := scheduling.NewService(
-		yamlconfig.NewYAMLLoader(scheduling.ScheduleValidatorFunc(func(_ context.Context, s scheduling.Schedule) error {
-			return scheduler.ValidateSchedule(string(s))
-		})),
-		executor.NewRunner(executor.DefaultMaxOutput),
-		scheduler.NewCron(obs),
+		yaml.NewLoader(cron.NewValidator()),
+		exec.NewRunner(exec.DefaultMaxOutput),
+		cron.NewScheduler(obs),
 		obs,
 	)
 	if err := uc.Start(ctx, cfg.JobsPath); err != nil {
