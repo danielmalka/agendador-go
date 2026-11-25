@@ -2,6 +2,7 @@
 package config
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -10,22 +11,18 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/danielmalka/agendador-go/internal/domain"
+	"github.com/danielmalka/agendador-go/internal/scheduling"
 )
 
-// ScheduleValidator checks a schedule expression; injected to keep the loader
-// independent of the cron library.
-type ScheduleValidator func(spec string) error
-
-// YAMLLoader implements domain.ConfigLoader.
+// YAMLLoader implements scheduling.JobLoader.
 type YAMLLoader struct {
-	validateSchedule ScheduleValidator
+	validateSchedule scheduling.ScheduleValidator
 }
 
-var _ domain.ConfigLoader = (*YAMLLoader)(nil)
+var _ scheduling.JobLoader = (*YAMLLoader)(nil)
 
-// NewYAMLLoader builds a loader that validates schedules with the given function.
-func NewYAMLLoader(validate ScheduleValidator) *YAMLLoader {
+// NewYAMLLoader builds a loader that validates schedules with the given validator.
+func NewYAMLLoader(validate scheduling.ScheduleValidator) *YAMLLoader {
 	return &YAMLLoader{validateSchedule: validate}
 }
 
@@ -46,7 +43,7 @@ type jobDTO struct {
 }
 
 // Load reads path and returns the validated jobs.
-func (l *YAMLLoader) Load(path string) ([]domain.Job, error) {
+func (l *YAMLLoader) Load(ctx context.Context, path string) ([]scheduling.Job, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, fmt.Errorf("open config: %w", err)
@@ -64,30 +61,30 @@ func (l *YAMLLoader) Load(path string) ([]domain.Job, error) {
 	}
 
 	seen := make(map[string]bool, len(file.Jobs))
-	jobs := make([]domain.Job, 0, len(file.Jobs))
+	jj := make([]scheduling.Job, 0, len(file.Jobs))
 	for i, dto := range file.Jobs {
 		label := dto.Name
 		if label == "" {
 			label = fmt.Sprintf("#%d", i+1)
 		}
-		job, err := l.toJob(dto)
+		j, err := l.toJob(ctx, dto)
 		if err != nil {
 			return nil, fmt.Errorf("job %q: %w", label, err)
 		}
-		if seen[job.Name] {
-			return nil, fmt.Errorf("job %q: duplicate name", job.Name)
+		if seen[j.Name] {
+			return nil, fmt.Errorf("job %q: %w", j.Name, scheduling.ErrDuplicateJob)
 		}
-		seen[job.Name] = true
-		jobs = append(jobs, job)
+		seen[j.Name] = true
+		jj = append(jj, j)
 	}
-	return jobs, nil
+	return jj, nil
 }
 
-func (l *YAMLLoader) toJob(dto jobDTO) (domain.Job, error) {
-	job := domain.Job{
+func (l *YAMLLoader) toJob(ctx context.Context, dto jobDTO) (scheduling.Job, error) {
+	j := scheduling.Job{
 		Name:        dto.Name,
-		Schedule:    dto.Schedule,
-		Type:        domain.JobType(dto.Type),
+		Schedule:    scheduling.Schedule(dto.Schedule),
+		Type:        scheduling.JobType(dto.Type),
 		Command:     dto.Command,
 		Args:        dto.Args,
 		Interpreter: dto.Interpreter,
@@ -97,15 +94,15 @@ func (l *YAMLLoader) toJob(dto jobDTO) (domain.Job, error) {
 	if dto.Timeout != "" {
 		d, err := time.ParseDuration(dto.Timeout)
 		if err != nil {
-			return domain.Job{}, fmt.Errorf("invalid timeout: %w", err)
+			return scheduling.Job{}, fmt.Errorf("invalid timeout: %w", err)
 		}
-		job.Timeout = d
+		j.Timeout = d
 	}
-	if err := job.Validate(); err != nil {
-		return domain.Job{}, err
+	if err := j.Validate(); err != nil {
+		return scheduling.Job{}, err
 	}
-	if err := l.validateSchedule(job.Schedule); err != nil {
-		return domain.Job{}, fmt.Errorf("invalid schedule %q: %w", job.Schedule, err)
+	if err := l.validateSchedule.Validate(ctx, j.Schedule); err != nil {
+		return scheduling.Job{}, fmt.Errorf("invalid schedule %q: %w", j.Schedule, err)
 	}
-	return job, nil
+	return j, nil
 }

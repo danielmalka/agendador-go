@@ -1,6 +1,7 @@
 package config
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -9,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/danielmalka/agendador-go/internal/domain"
+	"github.com/danielmalka/agendador-go/internal/scheduling"
 )
 
 func writeYAML(t *testing.T, content string) string {
@@ -21,12 +22,12 @@ func writeYAML(t *testing.T, content string) string {
 	return p
 }
 
-func okSchedule(spec string) error {
-	if strings.HasPrefix(spec, "bad") {
+var okSchedule = scheduling.ScheduleValidatorFunc(func(_ context.Context, spec scheduling.Schedule) error {
+	if strings.HasPrefix(string(spec), "bad") {
 		return errors.New("bad spec")
 	}
 	return nil
-}
+})
 
 func TestLoadValid(t *testing.T) {
 	p := writeYAML(t, `
@@ -45,15 +46,15 @@ jobs:
     type: command
     command: echo
 `)
-	jobs, err := NewYAMLLoader(okSchedule).Load(p)
+	jj, err := NewYAMLLoader(okSchedule).Load(context.Background(), p)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := domain.Job{Name: "a", Schedule: "@daily", Type: domain.TypePython, Command: "x.py",
+	want := scheduling.Job{Name: "a", Schedule: "@daily", Type: scheduling.TypePython, Command: "x.py",
 		Args: []string{"--n", "1"}, Interpreter: "python3.12", Timeout: 5 * time.Minute,
 		Env: map[string]string{"K": "V"}, WorkDir: "/tmp"}
-	if len(jobs) != 2 || !reflect.DeepEqual(jobs[0], want) || jobs[1].Name != "b" {
-		t.Fatalf("unexpected jobs: %+v", jobs)
+	if len(jj) != 2 || !reflect.DeepEqual(jj[0], want) || jj[1].Name != "b" {
+		t.Fatalf("unexpected jobs: %+v", jj)
 	}
 }
 
@@ -73,7 +74,7 @@ func TestLoadInvalid(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := NewYAMLLoader(okSchedule).Load(writeYAML(t, tt.yaml))
+			_, err := NewYAMLLoader(okSchedule).Load(context.Background(), writeYAML(t, tt.yaml))
 			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
 				t.Fatalf("error = %v, want containing %q", err, tt.wantErr)
 			}
@@ -82,7 +83,7 @@ func TestLoadInvalid(t *testing.T) {
 }
 
 func TestLoadMissingFile(t *testing.T) {
-	if _, err := NewYAMLLoader(okSchedule).Load(filepath.Join(t.TempDir(), "nope.yml")); err == nil {
+	if _, err := NewYAMLLoader(okSchedule).Load(context.Background(), filepath.Join(t.TempDir(), "nope.yml")); err == nil {
 		t.Fatal("want error for missing file")
 	}
 }

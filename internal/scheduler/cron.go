@@ -1,4 +1,4 @@
-// Package scheduler adapts robfig/cron to the domain.Scheduler port.
+// Package scheduler adapts robfig/cron to the scheduling.Scheduler port.
 package scheduler
 
 import (
@@ -9,7 +9,7 @@ import (
 
 	"github.com/robfig/cron/v3"
 
-	"github.com/danielmalka/agendador-go/internal/domain"
+	"github.com/danielmalka/agendador-go/internal/scheduling"
 )
 
 // parser accepts 5-field specs, an optional leading seconds field and
@@ -24,7 +24,7 @@ func ValidateSchedule(spec string) error {
 	return err
 }
 
-// Cron implements domain.Scheduler.
+// Cron implements scheduling.Scheduler.
 type Cron struct {
 	cron    *cron.Cron
 	logger  *slog.Logger
@@ -32,37 +32,44 @@ type Cron struct {
 	cancel  context.CancelFunc
 }
 
-var _ domain.Scheduler = (*Cron)(nil)
+var _ scheduling.Scheduler = (*Cron)(nil)
 
 // NewCron builds a scheduler that logs skipped runs to logger.
 func NewCron(logger *slog.Logger) *Cron {
-	ctx, cancel := context.WithCancel(context.Background())
-	return &Cron{cron: cron.New(cron.WithParser(parser)), logger: logger, baseCtx: ctx, cancel: cancel}
+	return &Cron{cron: cron.New(cron.WithParser(parser)), logger: logger}
 }
 
 // Add registers fn on the job's schedule. A trigger is skipped while the
 // previous run of the same job is still going.
-func (c *Cron) Add(job domain.Job, fn func(ctx context.Context)) error {
-	wrapped := skipIfRunning(job.Name, c.logger, fn)
-	if _, err := c.cron.AddFunc(job.Schedule, func() { wrapped(c.baseCtx) }); err != nil {
-		return fmt.Errorf("schedule job %q: %w", job.Name, err)
+func (c *Cron) Add(_ context.Context, j scheduling.Job, fn func(ctx context.Context)) error {
+	wrapped := skipIfRunning(j.Name, c.logger, fn)
+	if _, err := c.cron.AddFunc(string(j.Schedule), func() { wrapped(c.baseCtx) }); err != nil {
+		return fmt.Errorf("schedule job %q: %w", j.Name, err)
 	}
 	return nil
 }
 
 // Start begins triggering jobs in the background.
-func (c *Cron) Start() { c.cron.Start() }
+func (c *Cron) Start(ctx context.Context) error {
+	c.baseCtx, c.cancel = context.WithCancel(context.WithoutCancel(ctx))
+	c.cron.Start()
+	return nil
+}
 
 // Stop stops new triggers and waits for running jobs until ctx is done. If ctx
 // expires first, the jobs' context is canceled so their processes are killed.
 func (c *Cron) Stop(ctx context.Context) error {
-	defer c.cancel()
+	if c.cancel != nil {
+		defer c.cancel()
+	}
 	done := c.cron.Stop().Done()
 	select {
 	case <-done:
 		return nil
 	case <-ctx.Done():
-		c.cancel()
+		if c.cancel != nil {
+			c.cancel()
+		}
 		<-done // jobs return promptly once killed; the runner bounds the wait
 		return fmt.Errorf("waiting for running jobs: %w", ctx.Err())
 	}

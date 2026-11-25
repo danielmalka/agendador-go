@@ -9,7 +9,7 @@ import (
 	"os/exec"
 	"time"
 
-	"github.com/danielmalka/agendador-go/internal/domain"
+	"github.com/danielmalka/agendador-go/internal/scheduling"
 )
 
 const (
@@ -19,12 +19,12 @@ const (
 	waitDelay = 2 * time.Second
 )
 
-// Runner implements domain.Runner with os/exec.
+// Runner implements scheduling.Runner with os/exec.
 type Runner struct {
 	maxOutput int
 }
 
-var _ domain.Runner = (*Runner)(nil)
+var _ scheduling.Runner = (*Runner)(nil)
 
 // NewRunner builds a Runner keeping at most maxOutput bytes of each stream.
 func NewRunner(maxOutput int) *Runner {
@@ -32,17 +32,17 @@ func NewRunner(maxOutput int) *Runner {
 }
 
 // Run executes the job and waits for it to finish.
-func (r *Runner) Run(ctx context.Context, job domain.Job) (domain.Result, error) {
-	if job.Timeout > 0 {
+func (r *Runner) Run(ctx context.Context, j scheduling.Job) (scheduling.Result, error) {
+	if j.Timeout > 0 {
 		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, job.Timeout)
+		ctx, cancel = context.WithTimeout(ctx, j.Timeout)
 		defer cancel()
 	}
 
-	bin, args := job.Argv()
+	bin, args := j.Argv()
 	cmd := exec.CommandContext(ctx, bin, args...)
-	cmd.Dir = job.WorkDir
-	cmd.Env = buildEnv(job.Env)
+	cmd.Dir = j.WorkDir
+	cmd.Env = buildEnv(j.Env)
 	cmd.WaitDelay = waitDelay
 	configureProcessGroup(cmd)
 	stdout, stderr := &cappedBuffer{max: r.maxOutput}, &cappedBuffer{max: r.maxOutput}
@@ -50,7 +50,7 @@ func (r *Runner) Run(ctx context.Context, job domain.Job) (domain.Result, error)
 
 	start := time.Now()
 	err := cmd.Run()
-	res := domain.Result{
+	res := scheduling.Result{
 		ExitCode: cmd.ProcessState.ExitCode(), // -1 when the process never started
 		Duration: time.Since(start),
 		Stdout:   stdout.String(),

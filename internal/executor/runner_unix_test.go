@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/danielmalka/agendador-go/internal/domain"
+	"github.com/danielmalka/agendador-go/internal/scheduling"
 )
 
 // The sh below is only the job's command under test; production code never uses a shell.
@@ -22,7 +22,7 @@ func TestCancelKillsGrandchildren(t *testing.T) {
 	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	job := domain.Job{Type: domain.TypeCommand, Command: "sh",
+	job := scheduling.Job{Type: scheduling.TypeCommand, Command: "sh",
 		Args: []string{"-c", `sleep 300 & echo $! > "$1"; wait`, "sh", fifo}}
 
 	ctx, cancel := context.WithCancel(context.Background())

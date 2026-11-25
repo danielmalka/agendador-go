@@ -13,10 +13,10 @@ import (
 	"syscall"
 
 	"github.com/danielmalka/agendador-go/config"
-	"github.com/danielmalka/agendador-go/internal/app"
 	yamlconfig "github.com/danielmalka/agendador-go/internal/config"
 	"github.com/danielmalka/agendador-go/internal/executor"
 	"github.com/danielmalka/agendador-go/internal/scheduler"
+	"github.com/danielmalka/agendador-go/internal/scheduling"
 )
 
 func main() {
@@ -57,12 +57,21 @@ func run(ctx, forceCtx context.Context, args []string, stdout, stderr io.Writer)
 	}
 
 	logger := slog.New(slog.NewTextHandler(stdout, &slog.HandlerOptions{Level: cfg.LogLevel}))
-	svc := app.NewService(
-		yamlconfig.NewYAMLLoader(scheduler.ValidateSchedule),
+	uc := scheduling.NewService(
+		yamlconfig.NewYAMLLoader(scheduling.ScheduleValidatorFunc(func(_ context.Context, s scheduling.Schedule) error {
+			return scheduler.ValidateSchedule(string(s))
+		})),
 		executor.NewRunner(executor.DefaultMaxOutput),
 		scheduler.NewCron(logger),
 		logger,
-		cfg.ShutdownTimeout,
 	)
-	return svc.Run(ctx, forceCtx, cfg.JobsPath)
+	if err := uc.Start(ctx, cfg.JobsPath); err != nil {
+		return err
+	}
+	<-ctx.Done()
+
+	logger.Info("shutting down")
+	stopCtx, cancel := context.WithTimeout(forceCtx, cfg.ShutdownTimeout)
+	defer cancel()
+	return uc.Stop(stopCtx)
 }

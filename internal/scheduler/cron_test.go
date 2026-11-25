@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/danielmalka/agendador-go/internal/domain"
+	"github.com/danielmalka/agendador-go/internal/scheduling"
 )
 
 func TestValidateSchedule(t *testing.T) {
@@ -27,7 +27,7 @@ func TestValidateSchedule(t *testing.T) {
 
 func TestAddInvalidSchedule(t *testing.T) {
 	c := NewCron(slog.Default())
-	err := c.Add(domain.Job{Name: "j", Schedule: "nope"}, func(context.Context) {})
+	err := c.Add(context.Background(), scheduling.Job{Name: "j", Schedule: "nope"}, func(context.Context) {})
 	if err == nil || !strings.Contains(err.Error(), `"j"`) {
 		t.Fatalf("err = %v", err)
 	}
@@ -67,7 +67,7 @@ func TestSkipIfRunningSkipsAndLogs(t *testing.T) {
 func TestCronTriggersAndStops(t *testing.T) {
 	c := NewCron(slog.Default())
 	ran := make(chan struct{}, 1)
-	if err := c.Add(domain.Job{Name: "tick", Schedule: "@every 1s"}, func(context.Context) {
+	if err := c.Add(context.Background(), scheduling.Job{Name: "tick", Schedule: "@every 1s"}, func(context.Context) {
 		select {
 		case ran <- struct{}{}:
 		default:
@@ -75,7 +75,9 @@ func TestCronTriggersAndStops(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	c.Start()
+	if err := c.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
 	select {
 	case <-ran:
 	case <-time.After(3 * time.Second):
@@ -90,14 +92,16 @@ func TestStopCancelsJobContextWhenWaitExpires(t *testing.T) {
 	c := NewCron(slog.Default())
 	started, canceled := make(chan struct{}), make(chan struct{})
 	var once atomic.Bool
-	_ = c.Add(domain.Job{Name: "hang", Schedule: "@every 1s"}, func(ctx context.Context) {
+	_ = c.Add(context.Background(), scheduling.Job{Name: "hang", Schedule: "@every 1s"}, func(ctx context.Context) {
 		if once.CompareAndSwap(false, true) {
 			close(started)
 			<-ctx.Done()
 			close(canceled)
 		}
 	})
-	c.Start()
+	if err := c.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
 	select {
 	case <-started:
 	case <-time.After(3 * time.Second):

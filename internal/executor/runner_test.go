@@ -8,11 +8,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/danielmalka/agendador-go/internal/domain"
+	"github.com/danielmalka/agendador-go/internal/scheduling"
 )
 
-func cmdJob(command string, args ...string) domain.Job {
-	return domain.Job{Name: "t", Schedule: "@daily", Type: domain.TypeCommand, Command: command, Args: args}
+func cmdJob(command string, args ...string) scheduling.Job {
+	return scheduling.Job{Name: "t", Schedule: "@daily", Type: scheduling.TypeCommand, Command: command, Args: args}
 }
 
 func TestRunSuccess(t *testing.T) {
@@ -112,7 +112,7 @@ func TestRunOutputIsCapped(t *testing.T) {
 }
 
 func TestRunPythonUsesInterpreter(t *testing.T) {
-	job := domain.Job{Type: domain.TypePython, Interpreter: "echo", Command: "script.py", Args: []string{"a"}}
+	job := scheduling.Job{Type: scheduling.TypePython, Interpreter: "echo", Command: "script.py", Args: []string{"a"}}
 	res, err := NewRunner(DefaultMaxOutput).Run(context.Background(), job)
 	if err != nil || strings.TrimSpace(res.Stdout) != "script.py a" {
 		t.Fatalf("err=%v stdout=%q", err, res.Stdout)

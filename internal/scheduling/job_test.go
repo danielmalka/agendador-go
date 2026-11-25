@@ -1,6 +1,7 @@
-package domain
+package scheduling
 
 import (
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
@@ -15,31 +16,39 @@ func TestValidate(t *testing.T) {
 	tests := []struct {
 		name    string
 		mutate  func(*Job)
-		wantErr string
+		wantErr error
 	}{
-		{"valid", func(*Job) {}, ""},
-		{"no name", func(j *Job) { j.Name = "" }, "name"},
-		{"no schedule", func(j *Job) { j.Schedule = "" }, "schedule"},
-		{"no command", func(j *Job) { j.Command = "" }, "command"},
-		{"bad type", func(j *Job) { j.Type = "ruby" }, "unknown type"},
-		{"empty type", func(j *Job) { j.Type = "" }, "unknown type"},
-		{"negative timeout", func(j *Job) { j.Timeout = -time.Second }, "timeout"},
+		{"valid", func(*Job) {}, nil},
+		{"no name", func(j *Job) { j.Name = "" }, ErrEmptyName},
+		{"no schedule", func(j *Job) { j.Schedule = "" }, ErrEmptySchedule},
+		{"no command", func(j *Job) { j.Command = "" }, ErrEmptyCommand},
+		{"bad type", func(j *Job) { j.Type = "ruby" }, ErrInvalidJobType},
+		{"empty type", func(j *Job) { j.Type = "" }, ErrInvalidJobType},
+		{"negative timeout", func(j *Job) { j.Timeout = -time.Second }, ErrNegativeTimeout},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			j := validJob()
 			tt.mutate(&j)
 			err := j.Validate()
-			if tt.wantErr == "" {
+			if tt.wantErr == nil {
 				if err != nil {
 					t.Fatalf("unexpected error: %v", err)
 				}
 				return
 			}
-			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
-				t.Fatalf("error = %v, want containing %q", err, tt.wantErr)
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("error = %v, want %v", err, tt.wantErr)
 			}
 		})
+	}
+}
+
+func TestValidateInvalidTypeMessage(t *testing.T) {
+	j := validJob()
+	j.Type = "ruby"
+	if err := j.Validate(); err == nil || !strings.Contains(err.Error(), `unknown type "ruby"`) {
+		t.Fatalf("err = %v", err)
 	}
 }
 
